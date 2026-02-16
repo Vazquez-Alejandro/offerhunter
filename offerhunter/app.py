@@ -4,6 +4,25 @@ import requests
 from bs4 import BeautifulSoup
 from auth import login_user, register_user, reset_password, create_reset_token, verify_user, send_username
 from scraper_pro import check_price as rastrear_busqueda
+import streamlit as st
+import sqlite3
+# ... tus otros imports ...
+
+# --- FUNCIONES DE BASE DE DATOS ---
+def guardar_caza(usuario_id, producto, link, frecuencia):
+    try:
+        conn = sqlite3.connect("offerhunter.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO cazas (usuario_id, producto, link, frecuencia)
+            VALUES (?, ?, ?, ?)
+        """, (usuario_id, producto, link, frecuencia))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar: {e}")
+        return False
 
 # 1. Configuración e Inicialización (Layout wide para que las cards respiren)
 st.set_page_config(page_title="OfferHunter 🐺", layout="wide", page_icon="🐺")
@@ -175,7 +194,7 @@ else:
     else: # omega
         limit = 2
         freq_options = ["1 h", "2 h", "3 h", "4 h"]
-        
+
     # --- Sección WhatsApp (Solo Alfa y Beta) ---
     if plan in ["alfa", "beta"]:
         with st.expander("📲 Sincronizar WhatsApp", expanded=not st.session_state.ws_vinculado):
@@ -208,43 +227,68 @@ else:
         st.info(f"🎯 {b['keyword']} - Máx: ${b['max_price']} ({b['frecuencia']})")
 
 # --- LISTADO DE BÚSQUEDAS ACTIVAS ---
-    if st.session_state.busquedas:
-        st.subheader(f"Mis Cacerías ({plan.capitalize()} 🐺)")
-        
-        for i, b in enumerate(st.session_state.busquedas):
-            with st.container(border=True):
-                col_info, col_btns = st.columns([3, 1])
+if st.session_state.busquedas:
+    st.subheader(f"Mis Cacerías ({plan.capitalize()} 🐺)")
+    
+    for i, b in enumerate(st.session_state.busquedas):
+        with st.container(border=True):
+            col_info, col_btns = st.columns([3, 1])
+            
+            with col_info:
+                st.markdown(f"**🎯 {b['keyword']}**")
+                st.caption(f"📍 {b['url'][:50]}...")
+                st.write(f"💰 Máx: ${b['max_price']} | ⏱️ {b['frecuencia']}")
+            
+            with col_btns:
+                if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
+                    with st.spinner("Buscando..."):
+                        # 1. Rastreo inmediato (Pasamos solo URL y Precio como espera tu scraper)
+                        resultados = rastrear_busqueda(b['url'], b['max_price'])
+                        
+                        # 2. Extraer frecuencia numérica para la BD
+                        try:
+                            valor_f = b.get('frecuencia', "60")
+                            freq_db = int(''.join(filter(str.isdigit, str(valor_f))))
+                        except:
+                            freq_db = 60
+                        
+                        # 3. GUARDAR EN BD
+                        exito = guardar_caza(
+                            usuario_id=1, 
+                            producto=b['keyword'], 
+                            link=b['url'], 
+                            frecuencia=freq_db
+                        )
+                        
+                        if resultados:
+                            st.session_state[f"last_res_{i}"] = resultados
+                            if exito: st.success(f"¡Guardado! Check cada {freq_db}m")
+                        else:
+                            st.error("Sin rastro por ahora...")
                 
-                with col_info:
-                    st.markdown(f"**🎯 {b['keyword']}**")
-                    st.caption(f"📍 {b['url'][:50]}...")
-                    st.write(f"💰 Máx: ${b['max_price']} | ⏱️ {b['frecuencia']}")
-                
-                with col_btns:
-                    if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
-                        with st.spinner("Buscando..."):
-                            # Llamada a la función de rastreo que definimos arriba
-                            resultados = rastrear_busqueda(b)
-                            if resultados:
-                                st.session_state[f"last_res_{i}"] = resultados
-                            else:
-                                st.error("Sin rastro...")
-                    
-                    if st.button("Eliminar 🗑️", key=f"del_{i}", use_container_width=True):
-                        st.session_state.busquedas.pop(i)
-                        st.rerun()
-                
-                # Mostrar resultados si existen para esta búsqueda
-                if f"last_res_{i}" in st.session_state:
-                    for r in st.session_state[f"last_res_{i}"]:
-                        with st.expander(f"🍖 {r['titulo']} - ${r['precio']}", expanded=True):
-                            st.markdown(f"[Ver oferta en la web]({r['link']})")
-                            if plan in ["alfa", "beta"] and st.session_state.ws_vinculado:
-                                msg = f"🐺 *¡PRESA!*%0A*Producto:* {r['titulo']}%0A*Precio:* ${r['precio']}%0A*Link:* {r['link']}"
-                                st.markdown(f"""<a href="https://wa.me/?text={msg}" target="_blank">
-                                    <button style="background-color:#25D366; color:white; border:none; padding:8px 12px; border-radius:5px; cursor:pointer;">
-                                        📲 Avisar por WhatsApp
-                                    </button></a>""", unsafe_allow_html=True)
+                if st.button("Eliminar 🗑️", key=f"del_{i}", use_container_width=True):
+                    st.session_state.busquedas.pop(i)
+                    if f"last_res_{i}" in st.session_state:
+                        del st.session_state[f"last_res_{i}"]
+                    st.rerun()
+
+        # --- MOSTRAR RESULTADOS (Con escudo anti-errores) ---
+        res_key = f"last_res_{i}"
+        if res_key in st.session_state and st.session_state[res_key]:
+            for r in st.session_state[res_key]:
+                # Verificamos que 'r' sea un dict válido antes de pedirle el título
+                if isinstance(r, dict) and 'titulo' in r:
+                    with st.expander(f"🍖 {r['titulo']} - ${r.get('precio', '???')}", expanded=True):
+                        st.markdown(f"[Ver oferta en la web]({r.get('link', '#')})")
+                        
+                        if plan in ["alfa", "beta"] and st.session_state.ws_vinculado:
+                            msg = f"🐺 *¡PRESA!*%0A*Producto:* {r['titulo']}%0A*Precio:* ${r.get('precio')}%0A*Link:* {r.get('link')}"
+                            st.markdown(f"""<a href="https://wa.me/?text={msg}" target="_blank">
+                                <button style="background-color:#25D366; color:white; border:none; padding:8px 12px; border-radius:5px; cursor:pointer;">
+                                    📲 Avisar por WhatsApp
+                                </button></a>""", unsafe_allow_html=True)
+                else:
+                    st.warning("Se detectó una oferta pero el formato es incompatible.")
 
     # --- FOOTER / BOTÓN DE TESTEO (OPCIONAL) ---
     st.sidebar.write("---")

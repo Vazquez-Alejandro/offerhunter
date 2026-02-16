@@ -6,7 +6,7 @@ def update_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Crear tabla usuarios con todas las columnas necesarias
+    # 1. Tabla Usuarios
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -16,32 +16,32 @@ def update_db():
                 email TEXT UNIQUE,
                 nacimiento TEXT,
                 password TEXT,
-                plan TEXT DEFAULT 'omega', -- ahora usamos omega/beta/alfa
+                plan TEXT DEFAULT 'omega',
                 telegram_id TEXT,
                 whatsapp_id TEXT,
                 verified INTEGER DEFAULT 0
             )
         """)
-        print("✅ Tabla usuarios creada o ya existente.")
+        print("✅ Tabla usuarios lista.")
     except Exception as e:
-        print("❌ Error creando tabla usuarios:", e)
+        print("❌ Error en usuarios:", e)
 
-    # Crear tabla tokens
+    # 2. Tabla Tokens
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 token TEXT,
-                type TEXT, -- 'verify' o 'reset'
+                type TEXT,
                 FOREIGN KEY(user_id) REFERENCES usuarios(id)
             )
         """)
-        print("✅ Tabla tokens creada o ya existente.")
+        print("✅ Tabla tokens lista.")
     except Exception as e:
-        print("❌ Error creando tabla tokens:", e)
+        print("❌ Error en tokens:", e)
 
-    # Crear tabla cazas
+    # 3. Tabla Cazas (Incluyendo Frecuencia)
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cazas (
@@ -50,14 +50,23 @@ def update_db():
                 producto TEXT NOT NULL,
                 estado TEXT CHECK(estado IN ('activa','exitosa')) DEFAULT 'activa',
                 link TEXT,
+                frecuencia INTEGER DEFAULT 60,
                 FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
             )
         """)
-        print("✅ Tabla cazas creada o ya existente.")
+        
+        # Por si ya tenías la tabla creada, intentamos agregar la columna frecuencia
+        try:
+            cursor.execute("ALTER TABLE cazas ADD COLUMN frecuencia INTEGER DEFAULT 60")
+            print("✅ Columna 'frecuencia' agregada a cazas.")
+        except:
+            pass # Ya existía la columna
+            
+        print("✅ Tabla cazas lista.")
     except Exception as e:
-        print("❌ Error creando tabla cazas:", e)
+        print("❌ Error en cazas:", e)
 
-    # Crear tabla historial
+    # 4. Tabla Historial
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS historial (
@@ -70,13 +79,13 @@ def update_db():
                 FOREIGN KEY(caza_id) REFERENCES cazas(id)
             )
         """)
-        print("✅ Tabla historial creada o ya existente.")
+        print("✅ Tabla historial lista.")
     except Exception as e:
-        print("❌ Error creando tabla historial:", e)
+        print("❌ Error en historial:", e)
 
     conn.commit()
     conn.close()
-    print("🎉 Base de datos actualizada correctamente.")
+    print("\n🎉 Base de datos actualizada con éxito.")
 
 if __name__ == "__main__":
     update_db()
