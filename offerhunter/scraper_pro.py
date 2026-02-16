@@ -1,81 +1,72 @@
-import os
+import re, os
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 def check_price(url, keywords):
-    # Preparamos las palabras clave
-    keywords_list = str(keywords).lower().strip().split()
+    k_list = str(keywords).lower().strip().split()
     resultados = []
-    # Ruta absoluta para el perfil de Chrome
-    user_data_dir = os.path.abspath("chrome_profile")
-
+    
     with sync_playwright() as p:
         try:
+            user_data_dir = os.path.join(os.getcwd(), "chrome_profile")
             context = p.chromium.launch_persistent_context(
                 user_data_dir,
                 headless=True,
-                args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage'],
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={'width': 1920, 'height': 1080}
             )
             
-            page = context.new_page()
-            # Mostramos en consola a dónde vamos realmente
-            print(f"[DEBUG 🐺] Navegando a: {url}")
+            page = context.pages[0]
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
-            # Navegación con tiempo de espera para sitios pesados como Despegar
-            page.goto(url.split('#')[0], wait_until="networkidle", timeout=90000)
+            page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # Verificación de Captcha o Login
-            if "login" in page.url or "account-verification" in page.url:
-                context.close()
-                return "AUTH_REQUIRED"
-
-            # Bajamos un poco para disparar la carga de precios
+            # Scroll dinámico: baja y sube un poco para engañar trackers y cargar lazy-load
             page.mouse.wheel(0, 2000)
             page.wait_for_timeout(4000)
             
-            soup = BeautifulSoup(page.content(), 'html.parser')
+            # --- MOTOR ROBUSTO: Búsqueda por "Contenedores de Candidatos" ---
+            # Buscamos cualquier elemento que parezca una tarjeta de producto o bloque de texto
+            bloques = page.query_selector_all("div, article, li, section")
+            
+            for bloque in bloques:
+                try:
+                    # Solo procesamos bloques que tengan el signo pesos
+                    texto = bloque.inner_text()
+                    if texto and '$' in texto and any(k in texto.lower() for k in k_list):
+                        
+                        # Extraemos el precio con una regex que ignore decimales/centavos
+                        price_match = re.search(r'\$\s?([\d\.]+)', texto)
+                        if price_match:
+                            precio_str = price_match.group(1).replace('.', '')
+                            precio_val = int(precio_str)
+                            
+                            # Filtro de seguridad para evitar capturar "costo de envío" o "cuotas"
+                            if 10000 < precio_val < 10000000:
+                                # El título suele ser la línea más larga de las primeras 3
+                                lineas = [l.strip() for l in texto.split('\n') if len(l.strip()) > 10]
+                                titulo = lineas[0] if lineas else "Producto hallado"
+                                
+                                resultados.append({
+                                    "titulo": titulo[:80],
+                                    "precio": precio_str,
+                                    "link": url
+                                })
+                except:
+                    continue
 
-            # --- CASO 1: MERCADO LIBRE ---
-            if "mercadolibre.com" in url:
-                items = soup.select('li.ui-search-layout__item')
-                for item in items:
-                    title_el = item.select_one('.ui-search-item__title, h2')
-                    price_el = item.select_one('.andes-money-amount__fraction')
-                    link_el = item.select_one('a.ui-search-link')
-                    
-                    if title_el and price_el:
-                        title_text = title_el.get_text().strip().lower()
-                        if any(word in title_text for word in keywords_list):
-                            resultados.append({
-                                "titulo": title_el.get_text().strip(),
-                                "precio": "".join(filter(str.isdigit, price_el.get_text())),
-                                "link": link_el['href'] if link_el else url
-                            })
-
-            # --- CASO 2: DESPEGAR ---
-            elif "despegar.com" in url:
-                # Selectores genéricos para hoteles o vuelos
-                items = soup.select('.cluster-container, .v-cluster, .item-fare-container, .accommodation-name')
-                for item in items:
-                    title_el = item.select_one('.cluster-title, .title, .item-location, span')
-                    price_el = item.select_one('.price-amount, .amount, .main-value')
-                    
-                    if price_el:
-                        title_text = title_el.get_text().strip() if title_el else "Resultado Despegar"
-                        # En Despegar somos más permisivos con el filtro
-                        if not keywords_list or any(word in title_text.lower() for word in keywords_list):
-                            resultados.append({
-                                "titulo": title_text,
-                                "precio": "".join(filter(str.isdigit, price_el.get_text())),
-                                "link": url
-                            })
-
-            print(f"[DEBUG 🐺] Cacería terminada. Total encontrados: {len(resultados)}")
             context.close()
             
-        except Exception as e:
-            print(f"[DEBUG ❌] Error crítico: {e}")
+            # Limpieza total de duplicados (por título y precio)
+            vistos = set()
+            finales = []
+            for r in resultados:
+                key = f"{r['titulo']}{r['precio']}"
+                if key not in vistos:
+                    vistos.add(key)
+                    finales.append(r)
             
-    return resultados
+            return sorted(finales, key=lambda x: int(x['precio']))
+            
+        except Exception as e:
+            print(f"[❌] Error: {e}")
+            return []
