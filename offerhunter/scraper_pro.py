@@ -1,4 +1,4 @@
-import re, os
+import re, os, random
 from playwright.sync_api import sync_playwright
 
 def check_price(url, keywords):
@@ -7,65 +7,60 @@ def check_price(url, keywords):
     
     with sync_playwright() as p:
         try:
-            user_data_dir = os.path.join(os.getcwd(), "chrome_profile")
+            # Usamos Chromium de Playwright pero bien disfrazado
+            user_data_dir = os.path.join(os.getcwd(), "bot_profile")
             context = p.chromium.launch_persistent_context(
                 user_data_dir,
-                headless=True,
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={'width': 1920, 'height': 1080}
+                headless=False, # Mantenelo así que es lo que funcionó
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                args=['--disable-blink-features=AutomationControlled']
             )
             
             page = context.pages[0]
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            
-            # Scroll dinámico: baja y sube un poco para engañar trackers y cargar lazy-load
-            page.mouse.wheel(0, 2000)
-            page.wait_for_timeout(4000)
-            
-            # --- MOTOR ROBUSTO: Búsqueda por "Contenedores de Candidatos" ---
-            # Buscamos cualquier elemento que parezca una tarjeta de producto o bloque de texto
-            bloques = page.query_selector_all("div, article, li, section")
-            
-            for bloque in bloques:
+            page.set_viewport_size({"width": 1280, "height": 720})
+
+            print(f"[DEBUG 🐺] Olfateando... No cierres la ventana.")
+            page.goto(url, wait_until="commit", timeout=30000)
+
+            # Espera a que aparezca cualquier signo de pesos
+            try:
+                page.wait_for_selector("text=$", timeout=20000)
+                print("[!] Precios detectados en pantalla.")
+            except:
+                print("[!] No se ven precios todavía...")
+
+            # Scroll para que carguen las imágenes y textos
+            page.mouse.wheel(0, 800)
+            page.wait_for_timeout(9000)
+
+            # ESTRATEGIA UNIVERSAL: Buscamos todos los artículos o divs que tengan un "$"
+            # Esto sirve para la Home y para la lista de búsqueda
+            elementos = page.query_selector_all("//div[contains(., '$')]")
+
+            for el in elementos:
                 try:
-                    # Solo procesamos bloques que tengan el signo pesos
-                    texto = bloque.inner_text()
-                    if texto and '$' in texto and any(k in texto.lower() for k in k_list):
-                        
-                        # Extraemos el precio con una regex que ignore decimales/centavos
-                        price_match = re.search(r'\$\s?([\d\.]+)', texto)
-                        if price_match:
-                            precio_str = price_match.group(1).replace('.', '')
-                            precio_val = int(precio_str)
-                            
-                            # Filtro de seguridad para evitar capturar "costo de envío" o "cuotas"
-                            if 10000 < precio_val < 10000000:
-                                # El título suele ser la línea más larga de las primeras 3
-                                lineas = [l.strip() for l in texto.split('\n') if len(l.strip()) > 10]
-                                titulo = lineas[0] if lineas else "Producto hallado"
-                                
-                                resultados.append({
-                                    "titulo": titulo[:80],
-                                    "precio": precio_str,
-                                    "link": url
-                                })
-                except:
-                    continue
+                    # Solo nos interesan bloques pequeños (cards), no toda la pantalla
+                    txt = el.inner_text()
+                    if txt and 50 < len(txt) < 500: # Filtro de tamaño de texto de una 'card'
+                        if any(k in txt.lower() for k in k_list) and "$" in txt:
+                            # Extraer precio
+                            match = re.search(r'\$\s?([\d\.,]+)', txt)
+                            if match:
+                                precio_raw = match.group(1).replace('.', '').replace(',', '')
+                                if 1000 < int(precio_raw) < 90000000:
+                                    lineas = [l.strip() for l in txt.split('\n') if len(l.strip()) > 3]
+                                    resultados.append({
+                                        "titulo": f"[$] {lineas[0][:50]}",
+                                        "precio": precio_raw,
+                                        "link": url
+                                    })
+                except: continue
 
             context.close()
             
-            # Limpieza total de duplicados (por título y precio)
-            vistos = set()
-            finales = []
-            for r in resultados:
-                key = f"{r['titulo']}{r['precio']}"
-                if key not in vistos:
-                    vistos.add(key)
-                    finales.append(r)
-            
-            return sorted(finales, key=lambda x: int(x['precio']))
+            # Limpiar duplicados
+            finales = {f"{r['titulo']}{r['precio']}": r for r in resultados}.values()
+            return sorted(list(finales), key=lambda x: int(x['precio']))
             
         except Exception as e:
             print(f"[❌] Error: {e}")

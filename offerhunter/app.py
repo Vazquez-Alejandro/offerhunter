@@ -6,7 +6,6 @@ from auth import login_user, register_user, reset_password, create_reset_token, 
 from scraper_pro import check_price as rastrear_busqueda
 import streamlit as st
 import sqlite3
-# ... tus otros imports ...
 
 # --- FUNCIONES DE BASE DE DATOS ---
 def guardar_caza(usuario_id, producto, link, frecuencia):
@@ -240,36 +239,26 @@ if st.session_state.busquedas:
                 st.write(f"💰 Máx: ${b['max_price']} | ⏱️ {b['frecuencia']}")
             
             with col_btns:
-                if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
-                    with st.spinner("Buscando presas..."):
-                        resultados = rastrear_busqueda(b['url'], b['keyword'])
-                        st.write(resultados)
-                        
-                        if resultados == "AUTH_REQUIRED":
-                            st.warning("⚠️ Sesión expirada. Logueate en la terminal.")
-                        
-                        elif resultados:
-                            # 1. Guardamos en el estado
-                            st.session_state[f"last_res_{i}"] = resultados
-                            
-                            # 2. Guardar en Base de Datos
-                            try:
-                                freq_db = int(''.join(filter(str.isdigit, str(b['frecuencia']))))
-                            except: freq_db = 60
-                            guardar_caza(user[0], b['keyword'], b['url'], freq_db)
-                            
-                            st.success("¡Presas encontradas!")
-                            # 3. FORZAMOS RECARGA para que aparezcan las cards abajo
-                            st.rerun() 
-                        else:
-                            st.error("Sin rastro. Revisá filtros.")
-                
-                if st.button("Eliminar 🗑️", key=f"del_{i}", use_container_width=True):
-                    st.session_state.busquedas.pop(i)
-                    if f"last_res_{i}" in st.session_state:
-                        del st.session_state[f"last_res_{i}"]
-                    st.rerun()
+                        if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
+                            with st.spinner("Buscando presas..."):
+                                resultados = rastrear_busqueda(b['url'], b['keyword'])
+                                
+                                if resultados == "AUTH_REQUIRED":
+                                    st.warning("⚠️ Sesión expirada.")
+                                
+                                elif resultados: # <--- SI ENTRÓ ACÁ, HAY PRESA
+                                    # EL LOBO SOLO AÚLLA SI HAY RESULTADOS
+                                    import os
+                                    os.system("paplay wolf.mp3 &") 
 
+                                    st.session_state[f"last_res_{i}"] = resultados
+                                    
+                                    # ... resto de tu lógica de guardado y rerun
+                                    st.success("¡Presas encontradas!")
+                                    st.rerun() 
+                                
+                                else: # <--- SI ENTRÓ ACÁ, NO HAY NADA
+                                    st.error("Sin rastro.")
         # --- MOSTRAR RESULTADOS (Con escudo anti-errores) ---
         # --- MOSTRAR RESULTADOS (Con fix de comparación) ---
         res_key = f"last_res_{i}"
