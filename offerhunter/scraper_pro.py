@@ -1,67 +1,61 @@
-import re, os, random
 from playwright.sync_api import sync_playwright
+import time
 
-def check_price(url, keywords):
-    k_list = str(keywords).lower().strip().split()
-    resultados = []
-    
+def check_price(url_objetivo, keywords, precio_max=5000000):
     with sync_playwright() as p:
         try:
-            # Usamos Chromium de Playwright pero bien disfrazado
-            user_data_dir = os.path.join(os.getcwd(), "bot_profile")
-            context = p.chromium.launch_persistent_context(
-                user_data_dir,
-                headless=False, # Mantenelo así que es lo que funcionó
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                args=['--disable-blink-features=AutomationControlled']
-            )
+            browser = p.chromium.connect_over_cdp("http://localhost:9223")
+            context = browser.contexts[0]
+            page = context.new_page() # Esto evita que se trabe el dashboard
             
-            page = context.pages[0]
-            page.set_viewport_size({"width": 1280, "height": 720})
+            page.goto(url_objetivo, wait_until="domcontentloaded", timeout=60000)
+            time.sleep(5) 
 
-            print(f"[DEBUG 🐺] Olfateando... No cierres la ventana.")
-            page.goto(url, wait_until="commit", timeout=30000)
+            # LA LÓGICA QUE TE FUNCIONÓ (Simplificada)
+            productos_encontrados = page.evaluate("""() => {
+                const results = [];
+                
+                // 1. Tu lógica ganadora (Frávega/Musimundo)
+                document.querySelectorAll('a, .product-item, article').forEach(el => {
+                    const texto = el.innerText || "";
+                    const link = el.tagName === 'A' ? el.href : el.querySelector('a')?.href;
+                    const precioMatch = texto.match(/\\$\\s?([\\d\\.]+)/);
+                    if (precioMatch && link && link.includes('http')) {
+                        results.push({
+                            titulo: texto.split('\\n')[0].substring(0, 70).trim(),
+                            precio: parseInt(precioMatch[1].replace(/\\./g, "")),
+                            link: link
+                        });
+                    }
+                });
 
-            # Espera a que aparezca cualquier signo de pesos
-            try:
-                page.wait_for_selector("text=$", timeout=20000)
-                print("[!] Precios detectados en pantalla.")
-            except:
-                print("[!] No se ven precios todavía...")
+                // 2. Refuerzo específico para Mercado Libre (si es que la anterior no lo ve)
+                document.querySelectorAll('.ui-search-result__wrapper, .poly-card').forEach(el => {
+                    const titleEl = el.querySelector('.ui-search-item__title, .poly-component__title');
+                    const priceEl = el.querySelector('.andes-money-amount__fraction');
+                    const linkEl = el.querySelector('a');
+                    if (titleEl && priceEl && linkEl) {
+                        results.push({
+                            titulo: titleEl.innerText.trim(),
+                            precio: parseInt(priceEl.innerText.replace(/\\./g, "")),
+                            link: linkEl.href
+                        });
+                    }
+                });
+                
+                return results;
+            }""")
 
-            # Scroll para que carguen las imágenes y textos
-            page.mouse.wheel(0, 800)
-            page.wait_for_timeout(9000)
-
-            # ESTRATEGIA UNIVERSAL: Buscamos todos los artículos o divs que tengan un "$"
-            # Esto sirve para la Home y para la lista de búsqueda
-            elementos = page.query_selector_all("//div[contains(., '$')]")
-
-            for el in elementos:
-                try:
-                    # Solo nos interesan bloques pequeños (cards), no toda la pantalla
-                    txt = el.inner_text()
-                    if txt and 50 < len(txt) < 500: # Filtro de tamaño de texto de una 'card'
-                        if any(k in txt.lower() for k in k_list) and "$" in txt:
-                            # Extraer precio
-                            match = re.search(r'\$\s?([\d\.,]+)', txt)
-                            if match:
-                                precio_raw = match.group(1).replace('.', '').replace(',', '')
-                                if 1000 < int(precio_raw) < 90000000:
-                                    lineas = [l.strip() for l in txt.split('\n') if len(l.strip()) > 3]
-                                    resultados.append({
-                                        "titulo": f"[$] {lineas[0][:50]}",
-                                        "precio": precio_raw,
-                                        "link": url
-                                    })
-                except: continue
-
-            context.close()
+            # FILTRO SIMPLE (Sin vueltas: si la palabra está, entra)
+            finales = []
+            k_list = [k.strip().lower() for k in keywords.split(",")]
             
-            # Limpiar duplicados
-            finales = {f"{r['titulo']}{r['precio']}": r for r in resultados}.values()
-            return sorted(list(finales), key=lambda x: int(x['precio']))
+            for p in productos_encontrados:
+                # Si el título tiene alguna de las palabras clave y el precio es menor al max
+                if any(k in p['titulo'].lower() for k in k_list) and p['precio'] <= precio_max:
+                    finales.append(p)
             
+            return finales
         except Exception as e:
-            print(f"[❌] Error: {e}")
+            print(f"Error: {e}")
             return []

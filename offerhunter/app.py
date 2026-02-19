@@ -241,7 +241,7 @@ if st.session_state.busquedas:
             with col_btns:
                         if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
                             with st.spinner("Buscando presas..."):
-                                resultados = rastrear_busqueda(b['url'], b['keyword'])
+                                resultados = rastrear_busqueda(b['url'], b['keyword'], b.get('precio_max', 5000000))
                                 
                                 if resultados == "AUTH_REQUIRED":
                                     st.warning("⚠️ Sesión expirada.")
