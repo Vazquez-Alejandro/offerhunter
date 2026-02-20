@@ -1,82 +1,47 @@
 import requests
 from flask import Flask, request
 import sqlite3
-from alertas import notificar_caceria_iniciada  # Importamos las funciones de alertas
+from alertas import notificar_caceria_iniciada, notificar_oferta_encontrada # <--- Agregamos alerta de hallazgo
+from scraper_pro import hunt_offers as rastrear # <--- Importamos el scraper
+from apscheduler.schedulers.background import BackgroundScheduler # <--- EL MOTOR
 
 DB_NAME = "offerhunter.db"
 VERIFY_TOKEN = "offerhunter_token"
 
 app = Flask(__name__)
 
-# --- FUNCIONES DE BASE DE DATOS ---
-
-def guardar_caza(usuario_id, producto, estado="activa", link=None):
+# --- EL MOTOR DE FONDO (El Vigilante) ---
+def vigilar_ofertas():
+    print("🐺 Olfateando la red en busca de presas...")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO cazas (usuario_id, producto, estado, link)
-        VALUES (?, ?, ?, ?)
-    """, (usuario_id, producto, estado, link))
-    conn.commit()
+    
+    # Traemos las cazas activas (asumiendo que agregaste columna url y precio_max)
+    cursor.execute("SELECT id, usuario_id, producto, link, precio_max FROM cazas WHERE estado = 'activa'")
+    cacerias = cursor.fetchall()
+    
+    for caza_id, user_id, producto, url, p_max in cacerias:
+        if not url: continue
+        
+        # Ejecutamos el scraper que ya pulimos
+        resultados = rastrear(url, producto, p_max)
+        
+        if resultados:
+            for r in resultados:
+                # Si encontramos algo por debajo del precio, avisamos
+                if r['precio'] <= p_max:
+                    print(f"🎯 ¡PRESA ENCONTRADA! {r['titulo']} a ${r['precio']}")
+                    notificar_oferta_encontrada(user_id, r) # <--- Función que debés tener en alertas.py
+    
     conn.close()
-    print(f"✅ Caza guardada: {producto} para usuario {usuario_id}")
 
-def obtener_usuario_id(wa_id, nombre):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM usuarios WHERE whatsapp_id = ?", (wa_id,))
-    row = cursor.fetchone()
+# Iniciamos el Scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=vigilar_ofertas, trigger="interval", minutes=15) # Cada 15 min
+scheduler.start()
 
-    if row:
-        usuario_id = row[0]
-        print(f"ℹ️ Usuario existente: {usuario_id} ({nombre})")
-    else:
-        cursor.execute("""
-            INSERT INTO usuarios (nombre, whatsapp_id, verified, plan)
-            VALUES (?, ?, 0, 'basic')
-        """, (nombre, wa_id))
-        usuario_id = cursor.lastrowid
-        print(f"🆕 Usuario creado: {usuario_id} ({nombre})")
-
-    conn.commit()
-    conn.close()
-    return usuario_id
-
-# --- WEBHOOK ---
-
-@app.route("/webhook", methods=["GET", "POST"])
-def webhook():
-    if request.method == "GET":
-        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            return request.args.get("hub.challenge")
-        return "Token inválido", 403
-
-    if request.method == "POST":
-        data = request.get_json()
-        print("📩 Webhook recibido")
-
-        try:
-            entry = data["entry"][0]["changes"][0]["value"]
-
-            if "messages" in entry:
-                contacts = entry.get("contacts", [])
-                nombre = contacts[0].get("profile", {}).get("name", "Usuario") if contacts else "Usuario"
-                
-                wa_id = entry["messages"][0]["from"]  # Ej: 5491158210746
-                texto = entry["messages"][0]["text"]["body"]
-                
-                print(f"👉 Mensaje de {nombre}: {texto}")
-
-                usuario_id = obtener_usuario_id(wa_id, nombre)
-                guardar_caza(usuario_id, texto)
-
-                # Disparar notificación de inicio de caza
-                notificar_caceria_iniciada(usuario_id, texto)
-
-        except Exception as e:
-            print("⚠️ Error procesando webhook:", e)
-
-        return "EVENT_RECEIVED", 200
+# --- (Tus funciones de DB y Webhook siguen igual abajo) ---
+# ... (guardar_caza, obtener_usuario_id, @app.route("/webhook"), etc.)
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    app.run(port=5000, debug=False) # Debug en False para que el scheduler no se duplique

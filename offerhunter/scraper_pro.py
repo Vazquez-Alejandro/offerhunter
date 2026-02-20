@@ -1,61 +1,64 @@
 from playwright.sync_api import sync_playwright
-import time
 
-def check_price(url_objetivo, keywords, precio_max=5000000):
+def hunt_offers(url, keyword, max_price):
     with sync_playwright() as p:
+        # Mantenemos headless=False para monitorear
+        browser = p.chromium.launch(headless=False) 
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        
         try:
-            browser = p.chromium.connect_over_cdp("http://localhost:9223")
-            context = browser.contexts[0]
-            page = context.new_page() # Esto evita que se trabe el dashboard
+            target_url = f"https://listado.mercadolibre.com.ar/{keyword.replace(' ', '-')}"
+            print(f"🕵️ Sabueso rastreando en: {target_url}")
             
-            page.goto(url_objetivo, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(5) 
-
-            # LA LÓGICA QUE TE FUNCIONÓ (Simplificada)
-            productos_encontrados = page.evaluate("""() => {
-                const results = [];
-                
-                // 1. Tu lógica ganadora (Frávega/Musimundo)
-                document.querySelectorAll('a, .product-item, article').forEach(el => {
-                    const texto = el.innerText || "";
-                    const link = el.tagName === 'A' ? el.href : el.querySelector('a')?.href;
-                    const precioMatch = texto.match(/\\$\\s?([\\d\\.]+)/);
-                    if (precioMatch && link && link.includes('http')) {
-                        results.push({
-                            titulo: texto.split('\\n')[0].substring(0, 70).trim(),
-                            precio: parseInt(precioMatch[1].replace(/\\./g, "")),
-                            link: link
-                        });
-                    }
-                });
-
-                // 2. Refuerzo específico para Mercado Libre (si es que la anterior no lo ve)
-                document.querySelectorAll('.ui-search-result__wrapper, .poly-card').forEach(el => {
-                    const titleEl = el.querySelector('.ui-search-item__title, .poly-component__title');
-                    const priceEl = el.querySelector('.andes-money-amount__fraction');
-                    const linkEl = el.querySelector('a');
-                    if (titleEl && priceEl && linkEl) {
-                        results.push({
-                            titulo: titleEl.innerText.trim(),
-                            precio: parseInt(priceEl.innerText.replace(/\\./g, "")),
-                            link: linkEl.href
-                        });
-                    }
-                });
-                
-                return results;
-            }""")
-
-            # FILTRO SIMPLE (Sin vueltas: si la palabra está, entra)
-            finales = []
-            k_list = [k.strip().lower() for k in keywords.split(",")]
+            page.goto(target_url, wait_until="networkidle", timeout=60000)
             
-            for p in productos_encontrados:
-                # Si el título tiene alguna de las palabras clave y el precio es menor al max
-                if any(k in p['titulo'].lower() for k in k_list) and p['precio'] <= precio_max:
-                    finales.append(p)
-            
-            return finales
+            # 1. Limpiamos pop-ups que estorben
+            try:
+                page.click("button:has-text('Aceptar cookies')", timeout=3000)
+                page.click("button:has-text('Más tarde')", timeout=3000)
+            except:
+                pass
+
+            # 2. Selector que agarra tanto cuadraditos como filas
+            # Buscamos el contenedor genérico de cada celda de producto
+            page.wait_for_selector(".ui-search-layout__item", timeout=10000)
+            items = page.locator(".ui-search-layout__item").all()
+            print(f"🔎 Items en el radar: {len(items)}")
+
+            presas = []
+            for item in items[:20]:
+                try:
+                    # El título siempre está en un h2 o h3 dentro del item
+                    titulo = item.locator("h2, h3").first.inner_text().strip()
+                    
+                    # El precio: buscamos la clase que contiene la 'fraction'
+                    # Usamos .first para evitar agarrar el precio "tachado" si hay oferta
+                    precio_text = item.locator(".andes-money-amount__fraction").first.inner_text()
+                    precio = int("".join(filter(str.isdigit, precio_text)))
+                    
+                    # El link: el primer enlace del contenedor
+                    link = item.locator("a").first.get_attribute("href")
+
+                    print(f"   ✅ Encontré: {titulo[:30]}... | ${precio}")
+
+                    if precio <= float(max_price):
+                        print("      🎯 ¡DENTRO DEL PRESUPUESTO!")
+                        presas.append({'titulo': titulo, 'precio': precio, 'link': link})
+                except Exception:
+                    continue
+
+            browser.close()
+            return presas
+
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"🚨 Error en la cacería: {e}")
+            if 'browser' in locals(): browser.close()
             return []
+
+if __name__ == "__main__":
+    # Test con margen amplio para confirmar que lee
+    res = hunt_offers("", "iphone 13", 5000000)
+    print(f"\n🏆 Total de ofertas capturadas: {len(res)}")

@@ -6,17 +6,46 @@ from email.mime.multipart import MIMEMultipart
 
 DB_NAME = "offerhunter.db"
 
-# --- envío de mails ---
+# --- INICIALIZACIÓN DE TABLAS ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nick TEXT UNIQUE,
+            nombre TEXT,
+            email TEXT UNIQUE,
+            nacimiento TEXT,
+            password TEXT,
+            plan TEXT,
+            telegram_id TEXT,
+            whatsapp_id TEXT,
+            verified INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_ref TEXT,
+            token TEXT,
+            type TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- ENVÍO DE MAILS ---
 def send_email(to_email, subject, body):
     from_email = "vazquezale82@gmail.com"
-    password = "REDACTED"  # clave de aplicación SIN espacios extra
-
+    password = "REDACTED" 
     msg = MIMEMultipart()
     msg["From"] = from_email
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "html"))
-
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
@@ -25,10 +54,10 @@ def send_email(to_email, subject, body):
         server.quit()
         return True
     except Exception as e:
-        print("Error enviando mail:", e)
+        print("Error mail:", e)
         return False
 
-# --- login flexible (usuario o email) ---
+# --- LOGIN ---
 def login_user(u_or_email, p):
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -41,33 +70,29 @@ def login_user(u_or_email, p):
         conn.close()
         return user
     except Exception as e:
-        print("Error en login:", e)
+        print("Error login:", e)
         return None
 
-# --- registro ---
+# --- REGISTRO ---
 def register_user(nick, nombre, e, b, p, plan="basic"):
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO usuarios (nick, nombre, email, nacimiento, password, plan, telegram_id, whatsapp_id, verified)
-            VALUES (?,?,?,?,?,?,NULL,NULL,0)
+            INSERT INTO usuarios (nick, nombre, email, nacimiento, password, plan, verified)
+            VALUES (?,?,?,?,?,?,0)
         """, (nick, nombre, e, b, p, plan))
         token = str(uuid.uuid4())
         cursor.execute("INSERT INTO tokens (user_ref, token, type) VALUES (?,?,?)", (nick, token, "verify"))
         conn.commit()
         conn.close()
-        send_email(
-            e,
-            "Verifica tu cuenta",
-            f"<p>Haz clic para verificar: <a href='http://localhost:8501/?verify={token}'>Verificar</a></p>"
-        )
+        send_email(e, "Verifica tu cuenta", f"<p>Clic: <a href='http://localhost:8501/?verify={token}'>Verificar</a></p>")
         return True
     except Exception as e:
-        print("Error registrando usuario:", e)
+        print("Error registro:", e)
         return False
 
-# --- verificación de email ---
+# --- VERIFICACIÓN ---
 def verify_user(token):
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -83,10 +108,9 @@ def verify_user(token):
         conn.close()
         return False
     except Exception as e:
-        print("Error verificando usuario:", e)
         return False
 
-# --- reset de contraseña ---
+# --- RESET Y RECUPERACIÓN (Los que faltaban) ---
 def create_reset_token(email):
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -98,17 +122,11 @@ def create_reset_token(email):
             cursor.execute("INSERT INTO tokens (user_ref, token, type) VALUES (?,?,?)", (row[0], token, "reset"))
             conn.commit()
             conn.close()
-            send_email(
-                email,
-                "Resetear contraseña",
-                f"<p>Haz clic para resetear: <a href='http://localhost:8501/?reset-password={token}'>Resetear</a></p>"
-            )
+            send_email(email, "Reset", f"Token: {token}")
             return True
         conn.close()
         return False
-    except Exception as e:
-        print("Error creando token de reset:", e)
-        return False
+    except: return False
 
 def reset_password(token, new_pass):
     try:
@@ -124,11 +142,8 @@ def reset_password(token, new_pass):
             return True
         conn.close()
         return False
-    except Exception as e:
-        print("Error reseteando contraseña:", e)
-        return False
+    except: return False
 
-# --- recuperar usuario ---
 def send_username(email):
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -137,12 +152,6 @@ def send_username(email):
         row = cursor.fetchone()
         conn.close()
         if row:
-            return send_email(
-                email,
-                "Recuperar usuario",
-                f"<p>Tu usuario registrado es: <b>{row[0]}</b></p>"
-            )
+            return send_email(email, "Usuario", f"Tu nick es: {row[0]}")
         return False
-    except Exception as e:
-        print("Error recuperando usuario:", e)
-        return False
+    except: return False
