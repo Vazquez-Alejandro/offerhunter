@@ -1,64 +1,117 @@
 from playwright.sync_api import sync_playwright
+import re
 
-def hunt_offers(url, keyword, max_price):
+
+def _to_int_price(text: str) -> int | None:
+    """
+    Convierte "$ 1.234.567" / "$1,234,567" en int.
+    """
+    if not text:
+        return None
+    m = re.search(r"\$\s*([\d\.\,]+)", text)
+    if not m:
+        return None
+    raw = m.group(1).replace(".", "").replace(",", "")
+    try:
+        return int(raw)
+    except:
+        return None
+
+
+def hunt_offers(url_input: str, keyword: str, max_price: int):
+    """
+    ✅ SOLO MERCADOLIBRE
+    Devuelve: [{"titulo": str, "precio": int, "link": str}, ...]
+    """
+
+    # Si te pasan "ps5" sin esquema, armamos búsqueda de ML
+    if url_input and url_input.startswith("http"):
+        target_url = url_input
+    else:
+        slug = (keyword or "").strip().replace(" ", "-")
+        target_url = f"https://listado.mercadolibre.com.ar/{slug}"
+
+    keyword_l = (keyword or "").strip().lower()
+    presas = []
+
     with sync_playwright() as p:
-        # Mantenemos headless=False para monitorear
-        browser = p.chromium.launch(headless=False) 
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
         )
         page = context.new_page()
-        
-        try:
-            target_url = f"https://listado.mercadolibre.com.ar/{keyword.replace(' ', '-')}"
-            print(f"🕵️ Sabueso rastreando en: {target_url}")
-            
-            page.goto(target_url, wait_until="networkidle", timeout=60000)
-            
-            # 1. Limpiamos pop-ups que estorben
-            try:
-                page.click("button:has-text('Aceptar cookies')", timeout=3000)
-                page.click("button:has-text('Más tarde')", timeout=3000)
-            except:
-                pass
 
-            # 2. Selector que agarra tanto cuadraditos como filas
-            # Buscamos el contenedor genérico de cada celda de producto
-            page.wait_for_selector(".ui-search-layout__item", timeout=10000)
-            items = page.locator(".ui-search-layout__item").all()
+        try:
+            print(f"🕵️ Sabueso rastreando en: {target_url}")
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+
+            # Esperamos contenedores reales de resultados
+            page.wait_for_selector("div.ui-search-result__wrapper, div.poly-card", timeout=20000)
+
+            # Scroll suave (a veces ML carga lazy)
+            page.mouse.wheel(0, 1200)
+            page.wait_for_timeout(1500)
+
+            items = page.locator("div.ui-search-result__wrapper, div.poly-card").all()
             print(f"🔎 Items en el radar: {len(items)}")
 
-            presas = []
-            for item in items[:20]:
+            for item in items[:60]:
                 try:
-                    # El título siempre está en un h2 o h3 dentro del item
-                    titulo = item.locator("h2, h3").first.inner_text().strip()
-                    
-                    # El precio: buscamos la clase que contiene la 'fraction'
-                    # Usamos .first para evitar agarrar el precio "tachado" si hay oferta
-                    precio_text = item.locator(".andes-money-amount__fraction").first.inner_text()
-                    precio = int("".join(filter(str.isdigit, precio_text)))
-                    
-                    # El link: el primer enlace del contenedor
-                    link = item.locator("a").first.get_attribute("href")
+                    texto = item.inner_text()
 
-                    print(f"   ✅ Encontré: {titulo[:30]}... | ${precio}")
+                    # Filtro keyword (si no querés filtrar, comentá estas 2 líneas)
+                    if keyword_l and keyword_l not in texto.lower():
+                        continue
 
-                    if precio <= float(max_price):
-                        print("      🎯 ¡DENTRO DEL PRESUPUESTO!")
-                        presas.append({'titulo': titulo, 'precio': precio, 'link': link})
-                except Exception:
+                    precio = _to_int_price(texto)
+                    if precio is None:
+                        continue
+
+                    if precio > int(max_price):
+                        continue
+
+                    # Link
+                    link = None
+                    a = item.locator("a").first
+                    if a:
+                        link = a.get_attribute("href")
+
+                    if link and link.startswith("/"):
+                        link = "https://www.mercadolibre.com.ar" + link
+
+                    # Título (mejor que poner keyword)
+                    titulo = texto.split("\n")[0].strip()
+                    if not titulo:
+                        titulo = keyword.capitalize() if keyword else "Oferta"
+
+                    presas.append({
+                        "titulo": titulo[:120],
+                        "precio": precio,
+                        "link": link or target_url
+                    })
+
+                    # debug opcional:
+                    # print(f"   ✅ Encontré: {titulo[:25]}... | ${precio}")
+
+                except:
                     continue
-
-            browser.close()
-            return presas
 
         except Exception as e:
             print(f"🚨 Error en la cacería: {e}")
-            if 'browser' in locals(): browser.close()
-            return []
+
+        finally:
+            context.close()
+            browser.close()
+
+    return presas
+
 
 if __name__ == "__main__":
-    # Test con margen amplio para confirmar que lee
-    res = hunt_offers("", "iphone 13", 5000000)
-    print(f"\n🏆 Total de ofertas capturadas: {len(res)}")
+    res = hunt_offers("https://listado.mercadolibre.com.ar/iphone-15", "iphone 15", 1000000)
+    print(f"🏆 Resultados: {len(res)}")
+    for r in res[:5]:
+        print(r)

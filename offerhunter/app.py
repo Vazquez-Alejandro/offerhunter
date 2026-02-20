@@ -3,11 +3,18 @@ import streamlit as st
 import base64
 import requests
 from bs4 import BeautifulSoup
-from auth import login_user, register_user, reset_password, create_reset_token, verify_user, send_username
+
+from auth import (
+    login_user,
+    register_user,
+    reset_password,
+    create_reset_token,
+    verify_user,
+    send_username
+)
+
 from scraper_pro import hunt_offers as rastrear_busqueda
 from engine import start_engine
-
-import base64
 
 if "play_sound" not in st.session_state:
     st.session_state["play_sound"] = False

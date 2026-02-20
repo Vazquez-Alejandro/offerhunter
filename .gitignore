@@ -1,0 +1,13 @@
+# Base de datos (¡IMPORTANTE!)
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Streamlit
+.streamlit/
