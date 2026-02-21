@@ -143,7 +143,17 @@ def get_base64_logo(path):
         return base64.b64encode(data).decode()
     except:
         return ""
-
+    
+# CSS extra SOLO para pantalla de login/registro
+if "user_logged" not in st.session_state:
+    st.markdown("""
+    <style>
+      .block-container{
+        max-width: 760px !important;
+        padding-top: 2.2rem !important;
+      }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- CSS GLOBAL ---
 st.markdown("""
@@ -171,6 +181,76 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+.logo-wrap{
+  display:flex;
+  justify-content:center;
+  margin: 0.5rem 0 1rem 0;
+}
+
+/* círculo blanco + difuminado */
+.logo-bg{
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+background: radial-gradient(circle,
+  rgba(255,255,255,1)    0%,
+  rgba(255,255,255,0.95) 40%,
+  rgba(255,255,255,0.75) 60%,
+  rgba(255,255,255,0.40) 75%,
+  rgba(255,255,255,0.00) 90%
+);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  /* un poquito de glow suave */
+  filter: drop-shadow(0 12px 24px rgba(0,0,0,0.35));
+}
+
+.logo-img{
+  width: 220px;
+  height: auto;
+  /* opcional: si el png tiene bordes feos, esto ayuda */
+  border-radius: 12px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+    <style>
+    /* --- FIX cards planes cuando el contenedor es angosto --- */
+        .plan-title{
+        font-size: 1.15rem;
+        line-height: 1.2;
+        word-break: normal;
+        }
+        .plan-price{
+        font-size: 1.15rem;
+        }
+        .plan-features li{
+        font-size: 0.92rem;
+        line-height: 1.25;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+    <style>
+        /* Contenedor “angosto” (login/registro/tabs) */
+        .narrow {
+        max-width: 520px;
+        margin: 0 auto;
+        }
+
+        /* Contenedor “ancho” (cards) */
+        .wide {
+        max-width: 1100px;
+        margin: 0 auto;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 params = st.query_params
 
 # --- RUTAS DE RECUPERACIÓN ---
@@ -192,68 +272,96 @@ elif "reset-password" in params:
 
 # --- LÓGICA DE ACCESO ---
 if "user_logged" not in st.session_state:
-    logo_b64 = get_base64_logo("img/logo.png")
-    st.markdown(f'<div class="contenedor-logo"><img src="data:image/png;base64,{logo_b64}" class="aura"></div>', unsafe_allow_html=True)
+    logo_b64 = get_base64_logo("img/logo_clean.png")
+    st.markdown(
+    f"""
+    <div class="logo-wrap">
+      <div class="logo-bg">
+        <img src="data:image/png;base64,{logo_b64}" class="logo-img">
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
     
     _, col_main, _ = st.columns([1, 2, 1])
-    with col_main:
-        t1, t2 = st.tabs(["🔑 Iniciar Sesión", "🐺 Unirse a la Jauría"])
-        
-        with t1:
+    # --- LOGIN / REGISTER ---
+    t1, t2 = st.tabs(["🔑 Iniciar Sesión", "🐺 Unirse a la Jauría"])
+
+    with t1:
+        # Login angosto
+        _, col_main, _ = st.columns([1, 2, 1])
+        with col_main:
             u = st.text_input("Usuario o Email", key="l_u")
             p = st.text_input("Contraseña", type="password", key="l_p")
             if st.button("Entrar", use_container_width=True, type="primary"):
                 user = login_user(u, p)
-                if user: 
+                if user:
                     st.session_state["user_logged"] = user
                     st.rerun()
                 else:
                     st.error("❌ Usuario/contraseña incorrectos.")
-        
-        with t2:
-            if "plan_elegido" not in st.session_state:
-                st.subheader("Elegí tu rango en la manada")
-                c1, c2, c3 = st.columns(3)
-                
-                with c1:
-                    st.markdown("""<div class="plan-card">
-                        <h3 class="plan-title">Omega 🐾</h3>
-                        <p class="plan-price">$5 / mes</p>
-                        <ul class="plan-features">
-                            <li>✅ 2 búsquedas activas</li>
-                            <li>✅ Alertas por precio piso</li>
-                            <li>✅ Notificaciones básicas</li>
-                        </ul></div>""", unsafe_allow_html=True)
-                    if st.button("Elegir Omega", use_container_width=True):
-                        st.session_state["plan_elegido"] = "omega"; st.rerun()
 
-                with c2:
-                    st.markdown("""<div class="plan-card" style="border-color: #4da3ff;">
-                        <h3 class="plan-title">Beta 🐺</h3>
-                        <p class="plan-price">$10 / mes</p>
-                        <ul class="plan-features">
-                            <li>✅ 5 búsquedas activas</li>
-                            <li>✅ Alertas precio y %</li>
-                            <li>✅ Email y WhatsApp</li>
-                            <li>✅ Historial de cazas</li>
-                        </ul></div>""", unsafe_allow_html=True)
-                    if st.button("Elegir Beta", use_container_width=True):
-                        st.session_state["plan_elegido"] = "beta"; st.rerun()
+    with t2:
+        if "plan_elegido" not in st.session_state:
+            # 🔥 Solo en la vista de planes: más ancho para que entren 3 cards
+            st.markdown("""
+            <style>
+            .block-container{
+                max-width: 1100px !important;
+            }
+            </style>
+            """, unsafe_allow_html=True)
 
-                with c3:
-                    st.markdown("""<div class="plan-card" style="background: rgba(77, 163, 255, 0.1);">
-                        <h3 class="plan-title">Alfa 👑</h3>
-                        <p class="plan-price">$15 / mes</p>
-                        <ul class="plan-features">
-                            <li>✅ 10 búsquedas activas</li>
-                            <li>✅ Errores de tarifa</li>
-                            <li>✅ Tiempo real 24/7</li>
-                            <li>✅ Comparador dinámico</li>
-                        </ul></div>""", unsafe_allow_html=True)
-                    if st.button("Elegir Alfa", use_container_width=True):
-                        st.session_state["plan_elegido"] = "alfa"; st.rerun()
-            else:
-                st.info(f"Registrando nuevo miembro Rango {st.session_state['plan_elegido'].capitalize()}")
+            st.subheader("Elegí tu rango en la manada")
+            c1, c2, c3 = st.columns(3, gap="large")
+
+            with c1:
+                st.markdown("""<div class="plan-card">
+                    <h3 class="plan-title">Omega 🐾</h3>
+                    <p class="plan-price">$5 / mes</p>
+                    <ul class="plan-features">
+                        <li>✅ 2 búsquedas activas</li>
+                        <li>✅ Alertas por precio piso</li>
+                        <li>✅ Notificaciones básicas</li>
+                    </ul></div>""", unsafe_allow_html=True)
+                if st.button("Elegir Omega", use_container_width=True):
+                    st.session_state["plan_elegido"] = "omega"
+                    st.rerun()
+
+            with c2:
+                st.markdown("""<div class="plan-card" style="border-color: #4da3ff;">
+                    <h3 class="plan-title">Beta 🐺</h3>
+                    <p class="plan-price">$10 / mes</p>
+                    <ul class="plan-features">
+                        <li>✅ 5 búsquedas activas</li>
+                        <li>✅ Alertas precio y %</li>
+                        <li>✅ Email y WhatsApp</li>
+                        <li>✅ Historial de cazas</li>
+                    </ul></div>""", unsafe_allow_html=True)
+                if st.button("Elegir Beta", use_container_width=True):
+                    st.session_state["plan_elegido"] = "beta"
+                    st.rerun()
+
+            with c3:
+                st.markdown("""<div class="plan-card" style="background: rgba(77, 163, 255, 0.1);">
+                    <h3 class="plan-title">Alfa 👑</h3>
+                    <p class="plan-price">$15 / mes</p>
+                    <ul class="plan-features">
+                        <li>✅ 10 búsquedas activas</li>
+                        <li>✅ Errores de tarifa</li>
+                        <li>✅ Tiempo real 24/7</li>
+                        <li>✅ Comparador dinámico</li>
+                    </ul></div>""", unsafe_allow_html=True)
+                if st.button("Elegir Alfa", use_container_width=True):
+                    st.session_state["plan_elegido"] = "alfa"
+                    st.rerun()
+
+        else:
+            # Registro (angosto)
+            _, col_main, _ = st.columns([1, 2, 1])
+            with col_main:
+                st.info(f"Registrando nuevo miembro · Rango {st.session_state['plan_elegido'].capitalize()}")
                 nu = st.text_input("Usuario")
                 em = st.text_input("Email")
                 np = st.text_input("Contraseña", type="password")
@@ -264,32 +372,96 @@ if "user_logged" not in st.session_state:
                         st.error("Error al registrar.")
 
 # --- PANEL PRINCIPAL ---
-# --- PANEL PRINCIPAL ---
 else:
     user = st.session_state["user_logged"]
-    es_admin = user[1].lower() == "ale"
+
+    # user tuple según tu DB: (id, email, password, ..., plan, creado_en, nick, nombre, ...)
+    email = str(user[1]).strip() if len(user) > 1 and user[1] else ""
+    nick  = str(user[6]).strip() if len(user) > 6 and user[6] else ""
+    display_name = nick if nick else (email.split("@")[0] if "@" in email else (email or "usuario"))
+
+    # Plan real (NO usar user[5] porque es creado_en)
+    plan = str(user[4]).lower().strip() if len(user) > 4 and user[4] else "omega"
+
+    # Admin: por nick/usuario visible
+    es_admin = display_name.lower() == "ale"
 
     # --- DEFINIR PLAN PRIMERO ---
     if es_admin:
         with st.sidebar:
+            st.subheader("🧭 Sesión")
+            st.caption(f"Usuario: `{display_name}`")
             st.divider()
             st.subheader("🛠️ Panel de Admin")
             plan_simulado = st.radio(
                 "Simular vista de rango:",
                 ["Omega", "Beta", "Alfa"],
-                index=2 if str(user[5]).lower().strip() == "alfa"
-                else (1 if str(user[5]).lower().strip() == "beta" else 0)
+                index=2 if plan == "alfa" else (1 if plan == "beta" else 0)
             )
             plan = plan_simulado.lower()
             st.info(f"Viendo como: {plan.capitalize()}")
             st.divider()
+                    
+            st.subheader("🛡️ Salud de Sitios")
+
+            conn = sqlite3.connect("offerhunter.db")
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT domain, status, fail_streak,
+                    COALESCE(last_ok_at, '-') as last_ok,
+                    COALESCE(last_fail_at, '-') as last_fail,
+                    COALESCE(last_error, '') as last_error
+                FROM site_health
+                ORDER BY
+                    CASE status WHEN 'broken' THEN 0 ELSE 1 END,
+                    fail_streak DESC,
+                    domain ASC
+            """)
+            rows = cur.fetchall()
+
+            if not rows:
+                st.caption("Todavía no hay sitios registrados.")
+            else:
+                for domain, status, streak, last_ok, last_fail, last_error in rows:
+                    icon = "✅" if status == "ok" else "🚨"
+                    st.write(f"{icon} **{domain}** · `{status}` · fallos: **{streak}**")
+
+                    if status != "ok" and last_error:
+                        with st.expander(f"Ver error ({domain})"):
+                            st.code(last_error)
+
+            st.divider()
+            st.subheader("🧾 Últimas corridas")
+
+            cur.execute("""
+                SELECT created_at, domain, ok, items_found, COALESCE(error,'')
+                FROM scrape_runs
+                ORDER BY id DESC
+                LIMIT 20
+            """)
+            runs = cur.fetchall()
+            conn.close()
+
+            if not runs:
+                st.caption("Aún no hay logs.")
+            else:
+                for created_at, domain, ok, items_found, error in runs:
+                    icon = "✅" if ok == 1 else "❌"
+                    st.write(f"{icon} `{created_at}` · {domain} · items: {items_found}")
+
+                    if ok == 0 and error:
+                        with st.expander(f"Ver error ({domain})"):
+                            st.code(error)
     else:
-        plan = str(user[5]).lower().strip()
+        with st.sidebar:
+            st.subheader("🧭 Sesión")
+            st.caption(f"Usuario: `{display_name}`")
 
     # ✅carga las búsquedas
     st.session_state.busquedas = obtener_cazas(user[0], plan)
 
-    st.title(f"Panel de {user[1]} - Rango {plan.capitalize()} 🐺")
+    st.title(f"Panel de {display_name} - Plan {plan.capitalize()} 🐺")
     # --- Indicador de uso del plan ---
     conn = sqlite3.connect("offerhunter.db")
     cursor = conn.cursor()
