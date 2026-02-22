@@ -380,83 +380,159 @@ else:
     nick  = str(user[6]).strip() if len(user) > 6 and user[6] else ""
     display_name = nick if nick else (email.split("@")[0] if "@" in email else (email or "usuario"))
 
-    # Plan real (NO usar user[5] porque es creado_en)
-    plan = str(user[4]).lower().strip() if len(user) > 4 and user[4] else "omega"
+    # ✅ Plan real (NO usar user[5] porque es creado_en)
+    plan_real = str(user[4]).lower().strip() if len(user) > 4 and user[4] else "omega"
 
-    # Admin: por nick/usuario visible
-    es_admin = display_name.lower() == "ale"
+    # ✅ Admin por email (seguro)
+    ADMIN_EMAILS = {"vazquezale82@gmail.com"}
+    es_admin = (email.lower() in ADMIN_EMAILS)
 
-    # --- DEFINIR PLAN PRIMERO ---
-    if es_admin:
-        with st.sidebar:
-            st.subheader("🧭 Sesión")
-            st.caption(f"Usuario: `{display_name}`")
-            st.divider()
+    # ✅ Plan "vista" (por defecto, plan real)
+    plan_vista = plan_real
+
+    # --- SIDEBAR ---
+    with st.sidebar:
+        st.subheader("🧭 Sesión")
+        st.caption(f"Usuario: `{display_name}`")
+        st.caption(f"Plan real: **{plan_real.capitalize()}**")
+
+        st.divider()
+
+        if es_admin:
             st.subheader("🛠️ Panel de Admin")
+
+            # Botón refresh rápido (solo rerun)
+            if st.button("🔄 Refrescar panel", use_container_width=True):
+                st.rerun()
+
             plan_simulado = st.radio(
                 "Simular vista de rango:",
                 ["Omega", "Beta", "Alfa"],
-                index=2 if plan == "alfa" else (1 if plan == "beta" else 0)
+                index=2 if plan_real == "alfa" else (1 if plan_real == "beta" else 0),
+                key="admin_plan_sim"
             )
-            plan = plan_simulado.lower()
-            st.info(f"Viendo como: {plan.capitalize()}")
+            plan_vista = plan_simulado.lower()
+            st.info(f"Viendo como: {plan_simulado}")
+
             st.divider()
-                    
+
+            # --------------------
+            # Salud de sitios
+            # --------------------
             st.subheader("🛡️ Salud de Sitios")
 
-            conn = sqlite3.connect("offerhunter.db")
-            cur = conn.cursor()
+            try:
+                conn = sqlite3.connect("offerhunter.db")
+                cur = conn.cursor()
 
-            cur.execute("""
-                SELECT domain, status, fail_streak,
-                    COALESCE(last_ok_at, '-') as last_ok,
-                    COALESCE(last_fail_at, '-') as last_fail,
-                    COALESCE(last_error, '') as last_error
-                FROM site_health
-                ORDER BY
-                    CASE status WHEN 'broken' THEN 0 ELSE 1 END,
-                    fail_streak DESC,
-                    domain ASC
-            """)
-            rows = cur.fetchall()
+                cur.execute("""
+                    SELECT domain, status, fail_streak,
+                        COALESCE(last_ok_at, '-') as last_ok,
+                        COALESCE(last_fail_at, '-') as last_fail,
+                        COALESCE(last_error, '') as last_error
+                    FROM site_health
+                    ORDER BY
+                        CASE status WHEN 'broken' THEN 0 ELSE 1 END,
+                        fail_streak DESC,
+                        domain ASC
+                """)
+                rows = cur.fetchall()
 
-            if not rows:
-                st.caption("Todavía no hay sitios registrados.")
-            else:
-                for domain, status, streak, last_ok, last_fail, last_error in rows:
-                    icon = "✅" if status == "ok" else "🚨"
-                    st.write(f"{icon} **{domain}** · `{status}` · fallos: **{streak}**")
+                if not rows:
+                    st.caption("Todavía no hay sitios registrados.")
+                else:
+                    # Vista compacta
+                    for domain, status, streak, last_ok, last_fail, last_error in rows:
+                        icon = "✅" if status == "ok" else "🚨"
+                        st.write(f"{icon} **{domain}** · `{status}` · fallos: **{streak}**")
 
-                    if status != "ok" and last_error:
-                        with st.expander(f"Ver error ({domain})"):
-                            st.code(last_error)
+                        if status != "ok" and last_error:
+                            with st.expander(f"Ver error ({domain})"):
+                                st.code(last_error)
 
-            st.divider()
-            st.subheader("🧾 Últimas corridas")
+                st.divider()
 
-            cur.execute("""
-                SELECT created_at, domain, ok, items_found, COALESCE(error,'')
-                FROM scrape_runs
-                ORDER BY id DESC
-                LIMIT 20
-            """)
-            runs = cur.fetchall()
-            conn.close()
+                # --------------------
+                # Últimas corridas
+                # --------------------
+                st.subheader("🧾 Últimas corridas")
 
-            if not runs:
-                st.caption("Aún no hay logs.")
-            else:
-                for created_at, domain, ok, items_found, error in runs:
-                    icon = "✅" if ok == 1 else "❌"
-                    st.write(f"{icon} `{created_at}` · {domain} · items: {items_found}")
+                cur.execute("""
+                    SELECT created_at, domain, ok, items_found, COALESCE(error,'')
+                    FROM scrape_runs
+                    ORDER BY id DESC
+                    LIMIT 20
+                """)
+                runs = cur.fetchall()
 
-                    if ok == 0 and error:
-                        with st.expander(f"Ver error ({domain})"):
-                            st.code(error)
-    else:
-        with st.sidebar:
-            st.subheader("🧭 Sesión")
-            st.caption(f"Usuario: `{display_name}`")
+                if not runs:
+                    st.caption("Aún no hay logs.")
+                else:
+                    for created_at, domain, ok, items_found, error in runs:
+                        icon = "✅" if ok == 1 else "❌"
+                        st.write(f"{icon} `{created_at}` · {domain} · items: {items_found}")
+
+                        if ok == 0 and error:
+                            with st.expander(f"Ver error ({domain})"):
+                                st.code(error)
+
+            except sqlite3.OperationalError as e:
+                st.error(f"DB error: {e}")
+                st.caption("Tip: revisá que existan las tablas `site_health` y `scrape_runs`.")
+            finally:
+                try:
+                    conn.close()
+                except:
+                    pass
+
+                # --------------------
+                # 👥 Usuarios (top 30)
+                # --------------------
+                st.divider()
+                st.subheader("👥 Usuarios (últimos 30)")
+
+                try:
+                    conn = sqlite3.connect("offerhunter.db")
+                    cur = conn.cursor()
+
+                    cur.execute("""
+                        SELECT
+                            id,
+                            COALESCE(nick,'') as nick,
+                            COALESCE(email,'') as email,
+                            COALESCE(plan,'omega') as plan,
+                            COALESCE(verified,0) as verified,
+                            COALESCE(created_at,'') as created_at
+                        FROM usuarios
+                        ORDER BY id DESC
+                        LIMIT 30
+                    """)
+                    rows = cur.fetchall()
+
+                    if not rows:
+                        st.caption("No hay usuarios.")
+                    else:
+                        st.dataframe(
+                            rows,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                0: "ID",
+                                1: "Nick",
+                                2: "Email",
+                                3: "Plan",
+                                4: "Verificado",
+                                5: "Creado"
+                            }
+                        )
+                finally:
+                    try:
+                        conn.close()
+                    except:
+                         pass
+
+    # ✅ IMPORTANTÍSIMO: de acá en adelante usá plan_vista para límites/UI
+    plan = plan_vista
 
     # ✅carga las búsquedas
     st.session_state.busquedas = obtener_cazas(user[0], plan)
@@ -625,9 +701,3 @@ else:
                                         </button></a>""", unsafe_allow_html=True)
                     else:
                         st.warning("Se detectó una oferta pero el formato es incompatible.")
-
-    # --- FOOTER / BOTÓN DE TESTEO ---
-    st.sidebar.write("---")
-    if st.sidebar.button("Cerrar Sesión"):
-        del st.session_state["user_logged"]
-        st.rerun()
