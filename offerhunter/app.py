@@ -3,6 +3,13 @@ import streamlit as st
 import base64
 import requests
 from bs4 import BeautifulSoup
+import subprocess
+import sys
+
+# 👉 Inicializar DB al arrancar
+from database import init_db
+init_db()
+
 
 from auth import (
     login_user,
