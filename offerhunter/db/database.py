@@ -1,6 +1,8 @@
+import os
 import sqlite3
 
-DB_NAME = "offerhunter.db"
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # raíz del proyecto
+DB_PATH = os.path.join(BASE_DIR, "offerhunter.db")
 
 
 def _tiene_columna(cursor, tabla: str, col: str) -> bool:
@@ -9,7 +11,7 @@ def _tiene_columna(cursor, tabla: str, col: str) -> bool:
 
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     # =========================
@@ -30,8 +32,7 @@ def init_db():
         )
     """)
 
-    # Si la tabla existía con otro esquema, agregamos columnas faltantes
-    # (SQLite permite ALTER TABLE ADD COLUMN sin perder datos)
+    # Agregar columnas faltantes (migración simple)
     if not _tiene_columna(cursor, "usuarios", "nick"):
         cursor.execute("ALTER TABLE usuarios ADD COLUMN nick TEXT")
     if not _tiene_columna(cursor, "usuarios", "nombre"):
@@ -50,7 +51,7 @@ def init_db():
         cursor.execute("ALTER TABLE usuarios ADD COLUMN verified INTEGER DEFAULT 0")
 
     # =========================
-    # 2) CAZAS (tu esquema actual + opcionales engine)
+    # 2) CAZAS
     # =========================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS cazas (
@@ -68,7 +69,6 @@ def init_db():
         )
     """)
 
-    # Si existía con tu esquema, agregamos lo que falte
     if not _tiene_columna(cursor, "cazas", "tipo_alerta"):
         cursor.execute("ALTER TABLE cazas ADD COLUMN tipo_alerta TEXT DEFAULT 'piso'")
     if not _tiene_columna(cursor, "cazas", "plan"):

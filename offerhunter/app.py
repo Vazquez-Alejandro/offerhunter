@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 # 👉 Inicializar DB al arrancar
-from database import init_db
+from db.database import init_db
 init_db()
 
 
@@ -20,7 +20,7 @@ from auth import (
     send_username
 )
 
-from scraper_pro import hunt_offers as rastrear_busqueda
+from scraper.scraper_pro import hunt_offers as rastrear_busqueda
 from engine import start_engine
 
 if "play_sound" not in st.session_state:
@@ -132,7 +132,11 @@ def obtener_cazas(usuario_id, plan):
     return cazas
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="OfferHunter 🐺", layout="wide", page_icon="🐺")
+st.set_page_config(
+    page_title="OfferHunter 🐺", 
+    layout="wide", 
+    page_icon="🐺"
+)
 
 if "busquedas" not in st.session_state:
     st.session_state["busquedas"] = []
@@ -657,7 +661,7 @@ else:
                         if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
                             with st.spinner("Rastreando..."):
 
-                                from scraper_pro import hunt_offers
+                                from scraper.scraper_pro import hunt_offers
 
                                 resultados = hunt_offers(
                                     b['url'],

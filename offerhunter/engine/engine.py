@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from scraper_pro import hunt_offers
+from scraper.scraper_pro import hunt_offers
 
 DB_NAME = "offerhunter.db"
 

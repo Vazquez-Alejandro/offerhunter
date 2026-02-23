@@ -1,8 +1,8 @@
 import requests
 from flask import Flask, request
 import sqlite3
-from alertas import notificar_caceria_iniciada, notificar_oferta_encontrada # <--- Agregamos alerta de hallazgo
-from scraper_pro import hunt_offers as rastrear # <--- Importamos el scraper
+from scraper.alertas import notificar_caceria_iniciada, notificar_oferta_encontrada # <--- Agregamos alerta de hallazgo
+from scraper.scraper_pro import hunt_offers as rastrear # <--- Importamos el scraper
 from apscheduler.schedulers.background import BackgroundScheduler # <--- EL MOTOR
 
 DB_NAME = "offerhunter.db"

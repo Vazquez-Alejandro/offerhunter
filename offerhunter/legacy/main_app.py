@@ -1,7 +1,7 @@
 import time
 import sqlite3
-from scraper_pro import check_price
-from alertas import enviar_alerta_premium
+from scraper.scraper_pro import check_price
+from scraper.alertas import enviar_alerta_premium
 
 DB_NAME = "offerhunter.db"
 
