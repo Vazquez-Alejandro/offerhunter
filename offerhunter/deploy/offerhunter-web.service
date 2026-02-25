@@ -1,0 +1,21 @@
+[Unit]
+Description=OfferHunter Web (Streamlit)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+User=alejandro
+Group=alejandro
+WorkingDirectory=/home/alejandro/Escritorio/Chamba/bots/offerhunter
+EnvironmentFile=/home/alejandro/Escritorio/Chamba/bots/offerhunter/.env
+ExecStart=/home/alejandro/Escritorio/Chamba/bots/offerhunter/venv/bin/streamlit run app.py \
+  --server.address=127.0.0.1 \
+  --server.port=8501
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

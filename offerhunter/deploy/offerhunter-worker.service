@@ -1,0 +1,19 @@
+[Unit]
+Description=OfferHunter Worker
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+User=alejandro
+Group=alejandro
+WorkingDirectory=/home/alejandro/Escritorio/Chamba/bots/offerhunter
+EnvironmentFile=/home/alejandro/Escritorio/Chamba/bots/offerhunter/.env
+ExecStart=/home/alejandro/Escritorio/Chamba/bots/offerhunter/venv/bin/python -m engine.worker
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
