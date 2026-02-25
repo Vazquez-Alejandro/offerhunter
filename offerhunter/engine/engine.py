@@ -7,7 +7,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from scraper.scraper_pro import hunt_offers
 
-# Ruta robusta a la DB (la DB sigue en la raíz del proyecto)
+# =========================
+# DB PATH ROBUSTO
+# =========================
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # .../offerhunter
 DB_PATH = os.path.join(BASE_DIR, "offerhunter.db")
 
@@ -15,6 +17,9 @@ DB_PATH = os.path.join(BASE_DIR, "offerhunter.db")
 _scheduler = None
 
 
+# =========================
+# HELPERS
+# =========================
 def _domain_from_url(url: str) -> str:
     try:
         host = urlparse(url).netloc.lower().strip()
@@ -90,10 +95,12 @@ def _clamp_minutes_by_plan(plan: str, mins: int) -> int:
         return max(mins, 30)
     if p == "alfa":
         return max(mins, 15)
-    # desconocido -> comportamiento conservador
     return max(mins, 60)
 
 
+# =========================
+# HEALTH + LOGS
+# =========================
 def _mark_site_ok(cursor, domain: str):
     cursor.execute(
         """
@@ -134,6 +141,9 @@ def _log_run(cursor, domain: str, caza_id: int, ok: int, items_found: int, error
     )
 
 
+# =========================
+# MAIN LOOP
+# =========================
 def vigilar_ofertas():
     print("🐺 Vigilando ofertas...")
 
@@ -160,18 +170,22 @@ def vigilar_ofertas():
     cazas = cursor.fetchall()
     print(f"📦 Total cazas activas: {len(cazas)}")
 
+    # 👇 TOPE anti-spam (por defecto 1 por corrida)
+    # Podés cambiarlo: export MAX_ALERTS_PER_RUN=5
+    try:
+        max_alerts_global = int(os.getenv("MAX_ALERTS_PER_RUN", "1"))
+    except Exception:
+        max_alerts_global = 1
+
     for caza_id, user_id, producto, link, precio_max, frecuencia, plan, last_check in cazas:
         if not link:
             continue
 
-        # 1) calcular minutos según frecuencia + blindaje por plan
         mins = _freq_to_minutes(frecuencia)
         mins = _clamp_minutes_by_plan(plan, mins)
 
-        # 2) decidir si “toca” correr según last_check
         last_dt = _parse_sqlite_dt(last_check)
         if now - last_dt < timedelta(minutes=mins):
-            # todavía no toca
             continue
 
         domain = _domain_from_url(link)
@@ -182,11 +196,47 @@ def vigilar_ofertas():
             items_found = len(resultados) if resultados else 0
             print(f"   📊 Resultados scraper: {items_found}")
 
-            # TODO: enchufar vistos + alertas
-            # nuevos = filtrar_nuevos(resultados)
-            # for oferta in nuevos:
-            #     if oferta["precio"] <= precio_max:
-            #         notificar_oferta_encontrada(user_id, oferta)
+            # Import acá (evita problemas si tocás alertas.py)
+            from scraper.alertas import notificar_oferta_encontrada
+
+            sent = 0
+
+            for oferta in resultados or []:
+                if sent >= max_alerts_global:
+                    break
+
+                link_oferta = oferta.get("link")
+                precio = oferta.get("precio")
+
+                if not link_oferta or precio is None:
+                    continue
+
+                # Parse precio
+                try:
+                    precio_num = float(precio)
+                except Exception:
+                    continue
+
+                if precio_num > float(precio_max):
+                    continue
+
+                try:
+                    # Dedup: si ya existe, UNIQUE lo bloquea
+                    cursor.execute(
+                        """
+                        INSERT INTO seen_offers (usuario_id, caza_id, link)
+                        VALUES (?, ?, ?)
+                        """,
+                        (user_id, caza_id, link_oferta),
+                    )
+
+                    print(f"🎯 Nueva oferta para caza {caza_id}: {link_oferta}")
+                    notificar_oferta_encontrada(user_id, oferta)
+
+                    sent += 1
+
+                except sqlite3.IntegrityError:
+                    continue
 
             # last_check
             cursor.execute(
@@ -208,7 +258,6 @@ def vigilar_ofertas():
             _mark_site_fail(cursor, domain, err)
             _log_run(cursor, domain, caza_id, 0, 0, err)
 
-            # Igual actualizamos last_check para saber que lo intentó
             cursor.execute(
                 """
                 UPDATE cazas
@@ -223,6 +272,9 @@ def vigilar_ofertas():
     print("✅ Ciclo terminado")
 
 
+# =========================
+# SCHEDULER
+# =========================
 def start_engine(run_once: bool = False):
     """
     run_once=True: ejecuta una ronda inmediatamente (útil para debug).
@@ -237,14 +289,10 @@ def start_engine(run_once: bool = False):
         vigilar_ofertas()
 
     if _scheduler is not None:
-        # Ya existe (por rerun de Streamlit en el mismo proceso)
         return
 
     _scheduler = BackgroundScheduler(daemon=True)
-
-    # Tick frecuente; el filtro por last_check + frecuencia decide cuáles corren.
     _scheduler.add_job(vigilar_ofertas, "interval", minutes=1, max_instances=1, coalesce=True)
-
     _scheduler.start()
 
     print("🚀 Motor OfferHunter iniciado (tick 1 min, frecuencia por caza)")
