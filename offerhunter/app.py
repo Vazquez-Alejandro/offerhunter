@@ -5,7 +5,10 @@ import requests
 from bs4 import BeautifulSoup
 import subprocess
 import sys
+import os
 
+BASE_DIR = os.path.dirname(__file__)
+WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
 # 👉 Inicializar DB al arrancar
 from db.database import init_db
 init_db()
@@ -27,7 +30,7 @@ if "play_sound" not in st.session_state:
     st.session_state["play_sound"] = False
 
 if st.session_state.get("play_sound"):
-    with open("wolf.mp3", "rb") as f:
+    with open(WOLF_PATH, "rb") as f:
         audio_bytes = f.read()
         b64 = base64.b64encode(audio_bytes).decode()
 
@@ -283,7 +286,7 @@ elif "reset-password" in params:
 
 # --- LÓGICA DE ACCESO ---
 if "user_logged" not in st.session_state:
-    logo_b64 = get_base64_logo("img/logo_clean.png")
+    logo_b64 = get_base64_logo("assets/img/logo_clean.png")
     st.markdown(
     f"""
     <div class="logo-wrap">
