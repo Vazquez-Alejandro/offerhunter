@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import subprocess
 import sys
 import os
-from auth.auth_supabase import supa_login, supa_signup
+from auth.auth_supabase import supa_login, supa_reset_password
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
@@ -331,12 +331,13 @@ if "user_logged" not in st.session_state:
     t1, t2 = st.tabs(["🔑 Iniciar Sesión", "🐺 Unirse a la Jauría"])
 
     with t1:
-        # Login angosto
         _, col_main, _ = st.columns([1, 2, 1])
         with col_main:
-            u = st.text_input("Email", key="l_u")
+
+            u = st.text_input("Usuario o Email", key="l_u")
             p = st.text_input("Contraseña", type="password", key="l_p")
 
+            # LOGIN
             if st.button("Entrar", use_container_width=True, type="primary", key="l_submit"):
                 user, err = supa_login(u, p)
 
@@ -346,6 +347,16 @@ if "user_logged" not in st.session_state:
                 else:
                     st.error(f"❌ {err}")
 
+            # RESET PASSWORD
+            if st.button("Olvidé mi contraseña", use_container_width=True, key="l_reset"):
+                if "@" in u:
+                    ok = supa_reset_password(u)
+                    if ok:
+                        st.success("📩 Te enviamos un email para restablecer la contraseña.")
+                    else:
+                        st.error("No se pudo enviar el email.")
+                else:
+                    st.warning("Ingresá tu EMAIL arriba para restablecer la contraseña.")
     with t2:
         if "plan_elegido" not in st.session_state:
             # 🔥 Solo en la vista de planes: más ancho para que entren 3 cards
@@ -411,14 +422,19 @@ if "user_logged" not in st.session_state:
                 em = st.text_input("Email", key="r_email")
                 np = st.text_input("Contraseña", type="password", key="r_pass")
 
-                if st.button("Finalizar Registro", use_container_width=True, key="r_submit"):
-                    # Supabase Auth signup (email verification lo maneja Supabase)
-                    user, err = supa_signup(em, np)
+            if st.button("Finalizar Registro", use_container_width=True, key="r_submit"):
 
-                    if user:
-                        st.success("✅ Cuenta creada. Revisá tu email para confirmar y luego iniciá sesión.")
-                    else:
-                        st.error(f"❌ {err}")
+                user, err = supa_signup(
+                    em,
+                    np,
+                    nu,
+                    st.session_state["plan_elegido"]
+                )
+
+                if user:
+                    st.success("✅ Cuenta creada. Revisá tu email para confirmar.")
+                else:
+                    st.error(f"❌ {err}")
 
 # --- PANEL PRINCIPAL ---
 else:
