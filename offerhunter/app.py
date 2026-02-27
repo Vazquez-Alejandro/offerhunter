@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import subprocess
 import sys
 import os
-from auth.auth_supabase import supa_login, supa_reset_password
+from auth.auth_supabase import supa_signup, supa_login, supa_reset_password
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
@@ -484,120 +484,47 @@ else:
 
             st.divider()
 
-            # --------------------
-            # Salud de sitios
-            # --------------------
-            st.subheader("🛡️ Salud de Sitios")
+
+
+# --------------------
+# 👥 Usuarios (top 30)
+# --------------------
+            st.divider()
+            st.subheader("👥 Usuarios (últimos 30)")
 
             try:
-                conn = sqlite3.connect("offerhunter.db")
-                cur = conn.cursor()
+                from auth.supabase_client import supabase
 
-                cur.execute("""
-                    SELECT domain, status, fail_streak,
-                        COALESCE(last_ok_at, '-') as last_ok,
-                        COALESCE(last_fail_at, '-') as last_fail,
-                        COALESCE(last_error, '') as last_error
-                    FROM site_health
-                    ORDER BY
-                        CASE status WHEN 'broken' THEN 0 ELSE 1 END,
-                        fail_streak DESC,
-                        domain ASC
-                """)
-                rows = cur.fetchall()
+                res = (
+                    supabase
+                    .table("profiles")
+                    .select("user_id, username, email, plan, role, created_at")
+                    .order("created_at", desc=True)
+                    .limit(30)
+                    .execute()
+                )
+
+                rows = res.data or []
 
                 if not rows:
-                    st.caption("Todavía no hay sitios registrados.")
+                    st.caption("No hay usuarios.")
                 else:
-                    # Vista compacta
-                    for domain, status, streak, last_ok, last_fail, last_error in rows:
-                        icon = "✅" if status == "ok" else "🚨"
-                        st.write(f"{icon} **{domain}** · `{status}` · fallos: **{streak}**")
+                    st.dataframe(
+                        rows,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "user_id": "ID",
+                            "username": "Nick",
+                            "email": "Email",
+                            "plan": "Plan",
+                            "role": "Rol",
+                            "created_at": "Creado"
+                        }
+                    )
 
-                        if status != "ok" and last_error:
-                            with st.expander(f"Ver error ({domain})"):
-                                st.code(last_error)
-
-                st.divider()
-
-                # --------------------
-                # Últimas corridas
-                # --------------------
-                st.subheader("🧾 Últimas corridas")
-
-                cur.execute("""
-                    SELECT created_at, domain, ok, items_found, COALESCE(error,'')
-                    FROM scrape_runs
-                    ORDER BY id DESC
-                    LIMIT 20
-                """)
-                runs = cur.fetchall()
-
-                if not runs:
-                    st.caption("Aún no hay logs.")
-                else:
-                    for created_at, domain, ok, items_found, error in runs:
-                        icon = "✅" if ok == 1 else "❌"
-                        st.write(f"{icon} `{created_at}` · {domain} · items: {items_found}")
-
-                        if ok == 0 and error:
-                            with st.expander(f"Ver error ({domain})"):
-                                st.code(error)
-
-            except sqlite3.OperationalError as e:
-                st.error(f"DB error: {e}")
-                st.caption("Tip: revisá que existan las tablas `site_health` y `scrape_runs`.")
-            finally:
-                try:
-                    conn.close()
-                except:
-                    pass
-
-                # --------------------
-                # 👥 Usuarios (top 30)
-                # --------------------
-                st.divider()
-                st.subheader("👥 Usuarios (últimos 30)")
-
-                try:
-                    conn = sqlite3.connect("offerhunter.db")
-                    cur = conn.cursor()
-
-                    cur.execute("""
-                        SELECT
-                            id,
-                            COALESCE(nick,'') as nick,
-                            COALESCE(email,'') as email,
-                            COALESCE(plan,'omega') as plan,
-                            COALESCE(verified,0) as verified,
-                            COALESCE(created_at,'') as created_at
-                        FROM usuarios
-                        ORDER BY id DESC
-                        LIMIT 30
-                    """)
-                    rows = cur.fetchall()
-
-                    if not rows:
-                        st.caption("No hay usuarios.")
-                    else:
-                        st.dataframe(
-                            rows,
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                0: "ID",
-                                1: "Nick",
-                                2: "Email",
-                                3: "Plan",
-                                4: "Verificado",
-                                5: "Creado"
-                            }
-                        )
-                finally:
-                    try:
-                        conn.close()
-                    except:
-                         pass
+            except Exception as e:
+                st.error(f"Error cargando usuarios: {e}")
 
     # ✅ IMPORTANTÍSIMO: de acá en adelante usá plan_vista para límites/UI
     plan = plan_vista
