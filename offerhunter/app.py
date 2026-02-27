@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 import subprocess
 import sys
 import os
+from auth.auth_supabase import supa_login, supa_signup
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
@@ -13,6 +14,8 @@ WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
 from db.database import init_db
 init_db()
 
+from dotenv import load_dotenv
+load_dotenv()
 
 from auth import (
     login_user,
@@ -52,38 +55,58 @@ PLAN_LIMITS = {
 }
 
 # --- FUNCIONES DE BASE DE DATOS ---
+from auth.supabase_client import supabase
 
-def guardar_caza(usuario_id, producto, url, precio_max, frecuencia, tipo_alerta, plan):
-    conn = sqlite3.connect("offerhunter.db")
-    cursor = conn.cursor()
+def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, plan):
+    """
+    Guarda una caza en Supabase (Postgres).
+    user_id: UUID de Supabase Auth (user.id)
+    plan: string ('omega', 'beta', 'alfa') desde la UI por ahora
+    """
+    try:
+        if not user_id:
+            return False
 
-    # Obtener plan real del usuario (backup)
-    cursor.execute("SELECT plan FROM usuarios WHERE id = ?", (usuario_id,))
-    row = cursor.fetchone()
+        # Normalizamos plan
+        plan = (plan or "omega").lower().strip()
 
-    if not row:
-        conn.close()
+        # 1) Contar cazas activas para límite
+        res_count = (
+            supabase
+            .table("cazas")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("estado", "activa")
+            .execute()
+        )
+        cantidad = int(res_count.count or 0)
+
+        limite = PLAN_LIMITS.get(plan, 2)
+        if cantidad >= limite:
+            return "limite"
+
+        # 2) Insert en Postgres
+        payload = {
+            "user_id": user_id,
+            "producto": producto,
+            "link": url,
+            "precio_max": precio_max,
+            "frecuencia": frecuencia,
+            "plan": plan,
+            "estado": "activa",
+        }
+
+        ins = supabase.table("cazas").insert(payload).execute()
+
+        data = getattr(ins, "data", None)
+        if not data:
+            return False
+
+        return True
+
+    except Exception as e:
+        print("[guardar_caza] error:", e)
         return False
-
-    plan_usuario = row[0].lower()
-
-    # Si viene plan vacío, usamos el de la DB
-    if not plan:
-        plan = plan_usuario
-
-    # Contar cazas actuales
-    cursor.execute("""
-        SELECT COUNT(*) FROM cazas
-        WHERE usuario_id = ? AND plan = ?
-    """, (usuario_id, plan))
-
-    cantidad = cursor.fetchone()[0]
-
-    limite = PLAN_LIMITS.get(plan, 2)
-
-    if cantidad >= limite:
-        conn.close()
-        return "limite"
 
     # Insertar caza
     cursor.execute("""
@@ -106,33 +129,38 @@ def guardar_caza(usuario_id, producto, url, precio_max, frecuencia, tipo_alerta,
     return True
 
 
-def obtener_cazas(usuario_id, plan):
-    conn = sqlite3.connect("offerhunter.db")
-    cursor = conn.cursor()
+from auth.supabase_client import supabase
 
-    cursor.execute("""
-        SELECT id, producto, link, precio_max, frecuencia, tipo_alerta, plan
-        FROM cazas
-        WHERE usuario_id = ?
-          AND plan = ?
-    """, (usuario_id, plan))
+def obtener_cazas(user_id: str, plan: str):
+    """
+    Devuelve lista de cazas del usuario desde Supabase Postgres.
+    - user_id: UUID (auth.users.id)
+    - plan: usado si querés filtrar por plan; si no, podés ignorarlo
+    """
+    if not user_id:
+        return []
 
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        # Trae activas primero, más recientes arriba
+        q = (
+            supabase
+            .table("cazas")
+            .select("id, producto, link, precio_max, frecuencia, plan, estado, created_at, last_check")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+        )
 
-    cazas = []
-    for r in rows:
-        cazas.append({
-            "id": r[0],
-            "keyword": r[1],
-            "url": r[2],          # en DB se llama link, pero en tu app lo usás como url
-            "max_price": r[3],
-            "frecuencia": r[4],
-            "tipo_alerta": r[5],
-            "plan": r[6]
-        })
+        # Si en tu modelo guardás el plan en la fila y querés filtrar:
+        # q = q.eq("plan", plan)
 
-    return cazas
+        res = q.execute()
+
+        data = getattr(res, "data", None)
+        return data or []
+
+    except Exception as e:
+        print("[obtener_cazas] error:", e)
+        return []
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(
@@ -306,15 +334,17 @@ if "user_logged" not in st.session_state:
         # Login angosto
         _, col_main, _ = st.columns([1, 2, 1])
         with col_main:
-            u = st.text_input("Usuario o Email", key="l_u")
+            u = st.text_input("Email", key="l_u")
             p = st.text_input("Contraseña", type="password", key="l_p")
-            if st.button("Entrar", use_container_width=True, type="primary"):
-                user = login_user(u, p)
+
+            if st.button("Entrar", use_container_width=True, type="primary", key="l_submit"):
+                user, err = supa_login(u, p)
+
                 if user:
                     st.session_state["user_logged"] = user
                     st.rerun()
                 else:
-                    st.error("❌ Usuario/contraseña incorrectos.")
+                    st.error(f"❌ {err}")
 
     with t2:
         if "plan_elegido" not in st.session_state:
@@ -376,26 +406,34 @@ if "user_logged" not in st.session_state:
             _, col_main, _ = st.columns([1, 2, 1])
             with col_main:
                 st.info(f"Registrando nuevo miembro · Rango {st.session_state['plan_elegido'].capitalize()}")
-                nu = st.text_input("Usuario")
-                em = st.text_input("Email")
-                np = st.text_input("Contraseña", type="password")
-                if st.button("Finalizar Registro", use_container_width=True):
-                    if register_user(nu, nu, em, "2000-01-01", np, st.session_state["plan_elegido"]):
-                        st.success("¡Bienvenido! Verificá tu email para entrar.")
+
+                nu = st.text_input("Usuario", key="r_user")  # por ahora no se usa en Supabase Auth
+                em = st.text_input("Email", key="r_email")
+                np = st.text_input("Contraseña", type="password", key="r_pass")
+
+                if st.button("Finalizar Registro", use_container_width=True, key="r_submit"):
+                    # Supabase Auth signup (email verification lo maneja Supabase)
+                    user, err = supa_signup(em, np)
+
+                    if user:
+                        st.success("✅ Cuenta creada. Revisá tu email para confirmar y luego iniciá sesión.")
                     else:
-                        st.error("Error al registrar.")
+                        st.error(f"❌ {err}")
 
 # --- PANEL PRINCIPAL ---
 else:
     user = st.session_state["user_logged"]
 
-    # user tuple según tu DB: (id, email, password, ..., plan, creado_en, nick, nombre, ...)
-    email = str(user[1]).strip() if len(user) > 1 and user[1] else ""
-    nick  = str(user[6]).strip() if len(user) > 6 and user[6] else ""
-    display_name = nick if nick else (email.split("@")[0] if "@" in email else (email or "usuario"))
+    # Supabase User object
+    email = (getattr(user, "email", None) or "").strip()
 
-    # ✅ Plan real (NO usar user[5] porque es creado_en)
-    plan_real = str(user[4]).lower().strip() if len(user) > 4 and user[4] else "omega"
+    # Por ahora no usamos nick guardado en DB
+    nick = ""
+
+    display_name = email.split("@")[0] if "@" in email else (email or "usuario")
+
+ 
+    plan_real = str(st.session_state.get("plan_elegido") or "omega").lower().strip()
 
     # ✅ Admin por email (seguro)
     ADMIN_EMAILS = {"vazquezale82@gmail.com"}
@@ -547,24 +585,36 @@ else:
 
     # ✅ IMPORTANTÍSIMO: de acá en adelante usá plan_vista para límites/UI
     plan = plan_vista
-
+    user_id = getattr(user, "id", None)
     # ✅carga las búsquedas
-    st.session_state.busquedas = obtener_cazas(user[0], plan)
+    st.session_state.busquedas = obtener_cazas(user_id, plan)
 
     st.title(f"Panel de {display_name} - Plan {plan.capitalize()} 🐺")
     # --- Indicador de uso del plan ---
-    conn = sqlite3.connect("offerhunter.db")
-    cursor = conn.cursor()
+    from auth.supabase_client import supabase
 
-    cursor.execute("""
-        SELECT COUNT(*) FROM cazas
-        WHERE usuario_id = ? AND plan = ?
-    """, (user[0],plan))
+    def contar_cazas_activas(user_id: str) -> int:
+        if not user_id:
+            return 0
 
-    cazas_activas = cursor.fetchone()[0]
-    conn.close()
+        try:
+            res = (
+                supabase
+                .table("cazas")
+                .select("id", count="exact")
+                .eq("user_id", user_id)
+                .eq("estado", "activa")
+                .execute()
+            )
+
+            return int(res.count or 0)
+
+        except Exception as e:
+            print("[contar_cazas_activas] error:", e)
+            return 0
 
     limite_plan = PLAN_LIMITS.get(plan, 2)
+    cazas_activas = contar_cazas_activas(user_id)
     restantes = limite_plan - cazas_activas
 
     col1, col2 = st.columns(2)

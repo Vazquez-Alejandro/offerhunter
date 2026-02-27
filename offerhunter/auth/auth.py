@@ -1,8 +1,6 @@
 import sqlite3
 import uuid
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import os
 
 DB_NAME = "offerhunter.db"
 
@@ -38,23 +36,42 @@ def init_db():
 init_db()
 
 # --- ENVÍO DE MAILS ---
-def send_email(to_email, subject, body):
-    from_email = "vazquezale82@gmail.com"
-    password = "REDACTED" 
-    msg = MIMEMultipart()
-    msg["From"] = from_email
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "html"))
+import os
+import requests
+
+def send_email(to_email: str, subject: str, html_body: str) -> bool:
+    api_key = os.getenv("RESEND_API_KEY")
+    from_email = os.getenv("RESEND_FROM_EMAIL")
+
+    if not api_key or not from_email:
+        print("[EMAIL] Missing RESEND_API_KEY or RESEND_FROM_EMAIL")
+        return False
+
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(from_email, password)
-        server.sendmail(from_email, to_email, msg.as_string())
-        server.quit()
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": from_email,
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+            },
+            timeout=20,
+        )
+
+        if r.status_code >= 300:
+            print("[EMAIL] Resend error", r.status_code, r.text)
+            return False
+
+        print("[EMAIL] Resend ok", r.json())
         return True
+
     except Exception as e:
-        print("Error mail:", e)
+        print("[EMAIL] Exception", e)
         return False
 
 # --- LOGIN ---
@@ -78,18 +95,48 @@ def register_user(nick, nombre, e, b, p, plan="basic"):
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+
         cursor.execute("""
             INSERT INTO usuarios (nick, nombre, email, nacimiento, password, plan, verified)
             VALUES (?,?,?,?,?,?,0)
         """, (nick, nombre, e, b, p, plan))
+
         token = str(uuid.uuid4())
-        cursor.execute("INSERT INTO tokens (user_ref, token, type) VALUES (?,?,?)", (nick, token, "verify"))
+
+        cursor.execute("""
+            INSERT INTO tokens (user_ref, token, type)
+            VALUES (?,?,?)
+        """, (nick, token, "verify"))
+
         conn.commit()
         conn.close()
-        send_email(e, "Verifica tu cuenta", f"<p>Clic: <a href='http://localhost:8501/?verify={token}'>Verificar</a></p>")
+
+        # 🔥 Link dinámico según entorno
+        base_url = os.getenv("APP_BASE_URL", "http://localhost:8501")
+        verify_link = f"{base_url}/?verify={token}"
+
+        email_sent = send_email(
+            e,
+            "Verificá tu cuenta en OfferHunter",
+            f"""
+            <h2>Bienvenido a la manada 🐺</h2>
+            <p>Para activar tu cuenta hacé clic acá:</p>
+            <p><a href="{verify_link}">Verificar cuenta</a></p>
+            """
+        )
+
+        if not email_sent:
+            print("[REGISTER] Usuario creado pero falló el envío de email", {"email": e})
+
         return True
-    except Exception as e:
-        print("Error registro:", e)
+    except sqlite3.IntegrityError as err:
+        msg = str(err).lower()
+        if "usuarios.email" in msg:
+            print("Error registro: email ya registrado")
+        elif "usuarios.nick" in msg:
+            print("Error registro: nick ya registrado")
+        else:
+            print("Error registro:", err)
         return False
 
 # --- VERIFICACIÓN ---
@@ -97,17 +144,39 @@ def verify_user(token):
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT user_ref FROM tokens WHERE token=? AND type='verify'", (token,))
+
+        cursor.execute("""
+            SELECT user_ref
+            FROM tokens
+            WHERE token=? AND type='verify'
+        """, (token,))
+
         row = cursor.fetchone()
-        if row:
-            cursor.execute("UPDATE usuarios SET verified=1 WHERE nick=?", (row[0],))
-            cursor.execute("DELETE FROM tokens WHERE token=?", (token,))
-            conn.commit()
+
+        if not row:
             conn.close()
-            return True
+            return False
+
+        nick = row[0]
+
+        cursor.execute("""
+            UPDATE usuarios
+            SET verified=1
+            WHERE nick=?
+        """, (nick,))
+
+        cursor.execute("""
+            DELETE FROM tokens
+            WHERE token=?
+        """, (token,))
+
+        conn.commit()
         conn.close()
-        return False
-    except Exception as e:
+
+        return True
+
+    except Exception as err:
+        print("Error verify:", err)
         return False
 
 # --- RESET Y RECUPERACIÓN (Los que faltaban) ---
