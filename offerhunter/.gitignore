@@ -1,1 +1,18 @@
 limpiar_logo.py
+
+# Entorno virtual
+.venv/
+venv/
+
+# Variables de entorno
+.env
+
+# Base de datos local (SQLite)
+*.db
+
+# Archivos de Python
+__pycache__/
+*.pyc
+
+# Archivos del sistema
+.DS_Store
