@@ -7,6 +7,7 @@ import subprocess
 import sys
 import os
 from auth.auth_supabase import supa_signup, supa_login, supa_reset_password
+from auth.supabase_client import supabase
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
@@ -28,6 +29,21 @@ from auth import (
 
 from scraper.scraper_pro import hunt_offers as rastrear_busqueda
 from engine import start_engine
+
+# ✅ Admin por email (seguro)
+
+def get_user_profile(user_id: str):
+    res = (
+        supabase
+        .table("profiles")
+        .select("plan, role, username")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else {}
+
 
 if "play_sound" not in st.session_state:
     st.session_state["play_sound"] = False
@@ -440,20 +456,18 @@ if "user_logged" not in st.session_state:
 else:
     user = st.session_state["user_logged"]
 
-    # Supabase User object
     email = (getattr(user, "email", None) or "").strip()
 
-    # Por ahora no usamos nick guardado en DB
-    nick = ""
+    user_id = getattr(user, "id", None)
+    profile = get_user_profile(user_id)
 
-    display_name = email.split("@")[0] if "@" in email else (email or "usuario")
+    plan_real = (profile.get("plan") or "omega").lower().strip()
+    role = (profile.get("role") or "user").lower().strip()
+    nick = (profile.get("username") or "").strip()
 
- 
-    plan_real = str(st.session_state.get("plan_elegido") or "omega").lower().strip()
+    display_name = nick if nick else (email.split("@")[0] if "@" in email else "usuario")
 
-    # ✅ Admin por email (seguro)
-    ADMIN_EMAILS = {"vazquezale82@gmail.com"}
-    es_admin = (email.lower() in ADMIN_EMAILS)
+    es_admin = (role == "admin")
 
     # ✅ Plan "vista" (por defecto, plan real)
     plan_vista = plan_real
