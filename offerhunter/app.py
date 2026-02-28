@@ -730,7 +730,7 @@ else:
             res_key = f"last_res_{i}"
             if res_key in st.session_state and st.session_state[res_key]:
                 ofertas = st.session_state[res_key]
-                st.caption(f"DEBUG: {len(ofertas)} presas pasaron el filtro de nombre.")
+                #st.caption(f"DEBUG: {len(ofertas)} presas pasaron el filtro de nombre.")
 
                 for r in ofertas:
                     if isinstance(r, dict) and 'titulo' in r:
