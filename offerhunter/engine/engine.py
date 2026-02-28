@@ -1,17 +1,11 @@
 import os
-import sqlite3
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from auth.supabase_client import supabase
 from scraper.scraper_pro import hunt_offers
-
-# =========================
-# DB PATH ROBUSTO
-# =========================
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # .../offerhunter
-DB_PATH = os.path.join(BASE_DIR, "offerhunter.db")
 
 # Evita crear mil schedulers por los reruns de Streamlit
 _scheduler = None
@@ -69,12 +63,15 @@ def _freq_to_minutes(freq: str) -> int:
     return int(digits) if digits else 60
 
 
-def _parse_sqlite_dt(value) -> datetime:
+def _parse_dt(value) -> datetime:
     """
-    SQLite suele guardar 'YYYY-MM-DD HH:MM:SS' (UTC si usás CURRENT_TIMESTAMP).
+    Supabase suele devolver ISO string o datetime (según cliente).
     """
     if not value:
         return datetime(1970, 1, 1)
+
+    if isinstance(value, datetime):
+        return value
 
     s = str(value).strip()
     s = s.replace("T", " ").replace("Z", "")
@@ -99,49 +96,6 @@ def _clamp_minutes_by_plan(plan: str, mins: int) -> int:
 
 
 # =========================
-# HEALTH + LOGS
-# =========================
-def _mark_site_ok(cursor, domain: str):
-    cursor.execute(
-        """
-        INSERT INTO site_health (domain, status, last_ok_at, fail_streak, last_error)
-        VALUES (?, 'ok', CURRENT_TIMESTAMP, 0, NULL)
-        ON CONFLICT(domain) DO UPDATE SET
-            status='ok',
-            last_ok_at=CURRENT_TIMESTAMP,
-            fail_streak=0,
-            last_error=NULL
-        """,
-        (domain,),
-    )
-
-
-def _mark_site_fail(cursor, domain: str, err: str):
-    cursor.execute(
-        """
-        INSERT INTO site_health (domain, status, last_fail_at, fail_streak, last_error)
-        VALUES (?, 'broken', CURRENT_TIMESTAMP, 1, ?)
-        ON CONFLICT(domain) DO UPDATE SET
-            status='broken',
-            last_fail_at=CURRENT_TIMESTAMP,
-            fail_streak=fail_streak + 1,
-            last_error=?
-        """,
-        (domain, err[:500], err[:500]),
-    )
-
-
-def _log_run(cursor, domain: str, caza_id: int, ok: int, items_found: int, error: str | None):
-    cursor.execute(
-        """
-        INSERT INTO scrape_runs (domain, caza_id, ok, items_found, error)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (domain, caza_id, ok, items_found, (error[:800] if error else None)),
-    )
-
-
-# =========================
 # MAIN LOOP
 # =========================
 def vigilar_ofertas():
@@ -149,42 +103,40 @@ def vigilar_ofertas():
 
     now = datetime.utcnow()
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        SELECT
-            id,
-            usuario_id,
-            producto,
-            link,
-            precio_max,
-            COALESCE(frecuencia,'') as frecuencia,
-            COALESCE(plan,'omega') as plan,
-            last_check
-        FROM cazas
-        WHERE estado = 'activa'
-        """
+    # Traer cazas activas desde Supabase
+    res = (
+        supabase
+        .table("cazas")
+        .select("id, user_id, producto, link, precio_max, frecuencia, plan, last_check")
+        .eq("estado", "activa")
+        .execute()
     )
-    cazas = cursor.fetchall()
+    cazas = res.data or []
     print(f"📦 Total cazas activas: {len(cazas)}")
 
-    # 👇 TOPE anti-spam (por defecto 1 por corrida)
-    # Podés cambiarlo: export MAX_ALERTS_PER_RUN=5
+    # Tope anti-spam por corrida
     try:
         max_alerts_global = int(os.getenv("MAX_ALERTS_PER_RUN", "1"))
     except Exception:
         max_alerts_global = 1
 
-    for caza_id, user_id, producto, link, precio_max, frecuencia, plan, last_check in cazas:
-        if not link:
+    for c in cazas:
+        caza_id = c.get("id")
+        user_id = c.get("user_id")
+        producto = c.get("producto") or ""
+        link = c.get("link") or ""
+        precio_max = c.get("precio_max") or 0
+        frecuencia = c.get("frecuencia") or ""
+        plan = (c.get("plan") or "omega").lower().strip()
+        last_check = c.get("last_check")
+
+        if not caza_id or not user_id or not link:
             continue
 
         mins = _freq_to_minutes(frecuencia)
         mins = _clamp_minutes_by_plan(plan, mins)
 
-        last_dt = _parse_sqlite_dt(last_check)
+        last_dt = _parse_dt(last_check)
         if now - last_dt < timedelta(minutes=mins):
             continue
 
@@ -196,79 +148,39 @@ def vigilar_ofertas():
             items_found = len(resultados) if resultados else 0
             print(f"   📊 Resultados scraper: {items_found}")
 
-            # Import acá (evita problemas si tocás alertas.py)
-            from scraper.alertas import notificar_oferta_encontrada
-
-            sent = 0
-
-            for oferta in resultados or []:
-                if sent >= max_alerts_global:
-                    break
-
-                link_oferta = oferta.get("link")
-                precio = oferta.get("precio")
-
-                if not link_oferta or precio is None:
-                    continue
-
-                # Parse precio
-                try:
-                    precio_num = float(precio)
-                except Exception:
-                    continue
-
-                if precio_num > float(precio_max):
-                    continue
-
-                try:
-                    # Dedup: si ya existe, UNIQUE lo bloquea
-                    cursor.execute(
-                        """
-                        INSERT INTO seen_offers (usuario_id, caza_id, link)
-                        VALUES (?, ?, ?)
-                        """,
-                        (user_id, caza_id, link_oferta),
-                    )
-
-                    print(f"🎯 Nueva oferta para caza {caza_id}: {link_oferta}")
-                    notificar_oferta_encontrada(user_id, oferta)
-
-                    sent += 1
-
-                except sqlite3.IntegrityError:
-                    continue
-
-            # last_check
-            cursor.execute(
-                """
-                UPDATE cazas
-                SET last_check = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (caza_id,),
-            )
-
-            _mark_site_ok(cursor, domain)
-            _log_run(cursor, domain, caza_id, 1, items_found, None)
+            # 🔕 Notificaciones desactivadas por ahora (alertas.py sigue en SQLite)
+            # Cuando migremos scraper/alertas.py a Supabase, activamos esto:
+            #
+            # from scraper.alertas import notificar_oferta_encontrada
+            # sent = 0
+            # for oferta in resultados or []:
+            #     if sent >= max_alerts_global:
+            #         break
+            #     link_oferta = oferta.get("link")
+            #     precio = oferta.get("precio")
+            #     if not link_oferta or precio is None:
+            #         continue
+            #     try:
+            #         precio_num = float(precio)
+            #     except Exception:
+            #         continue
+            #     if precio_num > float(precio_max):
+            #         continue
+            #     notificar_oferta_encontrada(user_id, oferta)
+            #     sent += 1
 
         except Exception as e:
-            err = str(e)
-            print(f"⚠ Error en caza {caza_id}: {err}")
+            print(f"⚠ Error en caza {caza_id}: {e}")
 
-            _mark_site_fail(cursor, domain, err)
-            _log_run(cursor, domain, caza_id, 0, 0, err)
+        finally:
+            # Siempre actualizamos last_check para evitar loops infinitos si algo falla
+            try:
+                supabase.table("cazas").update(
+                    {"last_check": datetime.utcnow().isoformat()}
+                ).eq("id", caza_id).execute()
+            except Exception as e:
+                print(f"⚠ No pude actualizar last_check en caza {caza_id}: {e}")
 
-            cursor.execute(
-                """
-                UPDATE cazas
-                SET last_check = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (caza_id,),
-            )
-
-    conn.commit()
-    conn.close()
     print("✅ Ciclo terminado")
 
 

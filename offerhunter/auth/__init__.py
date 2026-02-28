@@ -1,8 +1,2 @@
-from .auth import (
-    login_user,
-    register_user,
-    reset_password,
-    create_reset_token,
-    verify_user,
-    send_username,
-)
+# auth/__init__.py
+# Package marker. Do not import legacy sqlite auth here.

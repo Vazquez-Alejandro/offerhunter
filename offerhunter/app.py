@@ -1,4 +1,3 @@
-import sqlite3
 import streamlit as st
 import base64
 import requests
@@ -11,20 +10,14 @@ from auth.supabase_client import supabase
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
-# 👉 Inicializar DB al arrancar
-from db.database import init_db
-init_db()
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from auth import (
-    login_user,
-    register_user,
-    reset_password,
-    create_reset_token,
-    verify_user,
-    send_username
+from auth.auth_supabase import (
+    supa_login,
+    supa_signup,
+    supa_reset_password,
 )
 
 from scraper.scraper_pro import hunt_offers as rastrear_busqueda
@@ -75,19 +68,26 @@ from auth.supabase_client import supabase
 
 def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, plan):
     """
-    Guarda una caza en Supabase (Postgres).
-    user_id: UUID de Supabase Auth (user.id)
-    plan: string ('omega', 'beta', 'alfa') desde la UI por ahora
+    Guarda una caza en Supabase (tabla public.cazas) respetando límites por plan.
+    Devuelve:
+      - True si guardó
+      - "limite" si alcanzó el límite del plan
+      - False si error
     """
     try:
+        from auth.supabase_client import supabase
+
         if not user_id:
             return False
 
-        # Normalizamos plan
-        plan = (plan or "omega").lower().strip()
+        # Normalizar
+        plan = (plan or "omega").strip().lower()
+        estado = "activa"
 
-        # 1) Contar cazas activas para límite
-        res_count = (
+        # 1) Contar cazas activas del usuario (para límite)
+        limite = PLAN_LIMITS.get(plan, 2)
+
+        count_res = (
             supabase
             .table("cazas")
             .select("id", count="exact")
@@ -95,54 +95,35 @@ def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, pl
             .eq("estado", "activa")
             .execute()
         )
-        cantidad = int(res_count.count or 0)
+        activas = int(getattr(count_res, "count", 0) or 0)
 
-        limite = PLAN_LIMITS.get(plan, 2)
-        if cantidad >= limite:
+        if activas >= limite:
             return "limite"
 
-        # 2) Insert en Postgres
+        # 2) Insertar caza
         payload = {
             "user_id": user_id,
-            "producto": producto,
-            "link": url,
+            "producto": (producto or "").strip(),
+            "link": (url or "").strip(),
             "precio_max": precio_max,
-            "frecuencia": frecuencia,
+            "frecuencia": (frecuencia or "").strip(),
+            "tipo_alerta": (tipo_alerta or "piso").strip().lower(),
             "plan": plan,
-            "estado": "activa",
+            "estado": estado,
+            "last_check": None,
         }
 
         ins = supabase.table("cazas").insert(payload).execute()
 
-        data = getattr(ins, "data", None)
-        if not data:
-            return False
+        # Si supabase devuelve data, ok
+        if ins.data:
+            return True
 
-        return True
+        return False
 
     except Exception as e:
         print("[guardar_caza] error:", e)
         return False
-
-    # Insertar caza
-    cursor.execute("""
-        INSERT INTO cazas 
-        (usuario_id, producto, link, precio_max, frecuencia, tipo_alerta, plan)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        usuario_id,
-        producto,
-        url,
-        precio_max,
-        frecuencia,
-        tipo_alerta,
-        plan
-    ))
-
-    conn.commit()
-    conn.close()
-
-    return True
 
 
 from auth.supabase_client import supabase
@@ -628,8 +609,9 @@ else:
             n_freq = st.selectbox("Frecuencia", freq_options)
 
             if st.button("Lanzar"):
+                user_id = getattr(user, "id", None)
                 resultado = guardar_caza(
-                    user[0],
+                    user_id,
                     n_key,
                     n_url,
                     n_price,
@@ -638,13 +620,13 @@ else:
                     plan
                 )
 
-                if resultado == "limite":
-                    st.error(f"🐺 Has alcanzado el límite de tu plan {plan.capitalize()}.")
-                elif resultado:
-                    st.success(f"🐺 ¡Sabueso apostado en modo {tipo_db}!")
+                if resultado is True:
+                    st.success("Caza lanzada 🐺")
                     st.rerun()
+                elif resultado == "limite":
+                    st.warning("⚠️ Alcanzaste el límite de tu plan.")
                 else:
-                    st.error("Error al guardar la cacería.")
+                    st.error("Error al guardar la caza.")
     else:
         st.warning(f"Has alcanzado el límite de {limit} búsquedas de tu plan {plan.capitalize()}.")
 
@@ -661,8 +643,18 @@ else:
                     tipo = b.get('tipo_alerta', 'piso')
                     label_precio = f"Máx: ${precio_meta:,}" if tipo == 'piso' else f"Objetivo: {precio_meta}% desc."
                     
-                    st.markdown(f"**🎯 {b['keyword']}** ({tipo.capitalize()})")
-                    st.caption(f"📍 {b['url'][:50]}...")
+                    kw = (
+                        b.get("keyword")
+                        or b.get("producto")
+                        or b.get("palabra_clave")
+                        or b.get("palabra clave")
+                        or ""
+                    )
+
+                    st.markdown(f"**🎯 {kw}** ({tipo.capitalize()})")                    
+                    url = (b.get("url") or b.get("link") or "")
+                    url = (b.get("url") or b.get("link") or "")
+                    st.caption(f"📍 {url[:50]}...")
                     st.write(f"💰 {label_precio} | ⏱️ {b['frecuencia']}")
                 
                     with col_btns:
@@ -673,10 +665,14 @@ else:
 
                                 from scraper.scraper_pro import hunt_offers
 
+                                kw = b.get("keyword") or b.get("producto") or ""
+                                url = b.get("url") or b.get("link") or ""
+                                precio = b.get("max_price") or b.get("precio_max") or 0
+
                                 resultados = hunt_offers(
-                                    b['url'],
-                                    b['keyword'],
-                                    b['max_price']
+                                    url,
+                                    kw,
+                                    precio
                                 )
 
                                 res_key = f"last_res_{i}"
@@ -690,12 +686,10 @@ else:
                         # 🗑 BOTÓN ELIMINAR
                         if st.button("🗑 Eliminar", key=f"del_{i}", use_container_width=True):
 
-                            conn = sqlite3.connect("offerhunter.db")
-                            cursor = conn.cursor()
+                            from auth.supabase_client import supabase
 
-                            cursor.execute("DELETE FROM cazas WHERE id = ?", (b["id"],))
-                            conn.commit()
-                            conn.close()
+                            # Borra SOLO si pertenece al usuario logueado (seguridad)
+                            supabase.table("cazas").delete().eq("id", b["id"]).eq("user_id", user_id).execute()
 
                             st.success("Caza eliminada 🐺")
                             st.rerun()                   
