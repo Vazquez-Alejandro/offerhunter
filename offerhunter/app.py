@@ -600,21 +600,55 @@ else:
             tipo_alerta = st.radio("Estrategia:", ["Precio Piso", "Descuento %"], horizontal=True)
             
             if tipo_alerta == "Precio Piso":
-                n_price = st.number_input("Precio Máximo ($)", min_value=0, value=500000)
+                n_price = st.number_input(
+                    "Precio Máximo ($)",
+                    min_value=0,
+                    value=500000,
+                    step=1000,
+                    key="price_piso"
+                )
                 tipo_db = "piso"
             else:
-                n_price = st.slider("Porcentaje deseado (%)", 5, 90, 35)
+                n_price = st.slider(
+                    "Porcentaje deseado (%)",
+                    5, 90, 35,
+                    key="price_desc"
+                )
                 tipo_db = "descuento"
-            
+
+            # ⚠️ FRECUENCIA SIEMPRE DEFINIDA ANTES DEL BOTÓN
             n_freq = st.selectbox("Frecuencia", freq_options)
+            
+            # DEBUG UI + TERMINAL
+            debug_ui = f"DEBUG UI | tipo_db={tipo_db} | n_price={n_price} | type={type(n_price)}"
+            st.caption(debug_ui)
+            print(debug_ui)
 
             if st.button("Lanzar"):
                 user_id = getattr(user, "id", None)
+
+                try:
+                    precio_max = int(float(n_price))
+                except Exception:
+                    precio_max = 0
+
+                debug_lanzar = (
+                    f"DEBUG LANZAR | user_id={user_id} | tipo_db={tipo_db} | "
+                    f"precio_max={precio_max} | freq={n_freq} | plan={plan}"
+                )
+                st.info(debug_lanzar)
+                print(debug_lanzar)
+
+                if tipo_db == "piso" and precio_max <= 0:
+                    st.error("El precio máximo debe ser mayor a 0.")
+                    print("ABORT: precio_max inválido para piso")
+                    st.stop()
+
                 resultado = guardar_caza(
                     user_id,
                     n_key,
                     n_url,
-                    n_price,
+                    precio_max,
                     n_freq,
                     tipo_db,
                     plan
@@ -639,7 +673,7 @@ else:
                 col_info, col_btns = st.columns([3, 1])
                 
                 with col_info:
-                    precio_meta = b.get('max_price', 0)
+                    precio_meta = b.get('precio_max', 0)
                     tipo = b.get('tipo_alerta', 'piso')
                     label_precio = f"Máx: ${precio_meta:,}" if tipo == 'piso' else f"Objetivo: {precio_meta}% desc."
                     
@@ -652,7 +686,6 @@ else:
                     )
 
                     st.markdown(f"**🎯 {kw}** ({tipo.capitalize()})")                    
-                    url = (b.get("url") or b.get("link") or "")
                     url = (b.get("url") or b.get("link") or "")
                     st.caption(f"📍 {url[:50]}...")
                     st.write(f"💰 {label_precio} | ⏱️ {b['frecuencia']}")
@@ -667,7 +700,7 @@ else:
 
                                 kw = b.get("keyword") or b.get("producto") or ""
                                 url = b.get("url") or b.get("link") or ""
-                                precio = b.get("max_price") or b.get("precio_max") or 0
+                                precio = b.get("precio_max") or b.get("precio_max") or 0
 
                                 resultados = hunt_offers(
                                     url,
@@ -702,17 +735,28 @@ else:
                 for r in ofertas:
                     if isinstance(r, dict) and 'titulo' in r:
                         precio_item = int(str(r.get('precio', 0)).replace('.', ''))
-                        precio_maximo = int(b.get('max_price', 0))
+                        precio_objetivo = int(b.get('precio_max', 0) or 0)
+                        tipo_alerta_row = (b.get('tipo_alerta') or 'piso').strip().lower()
 
-                        if precio_item <= precio_maximo:
+                        # Para 'piso' aplicamos el filtro por precio.
+                        # Para 'descuento', asumimos que el scraper ya filtró y mostramos lo que venga.
+                        pasa = (precio_item <= precio_objetivo) if tipo_alerta_row == 'piso' else True
+
+                        if pasa:
                             with st.expander(f"🍖 {r['titulo']} - ${precio_item:,}", expanded=True):
                                 st.markdown(f"[Ver oferta en la web]({r.get('link', '#')})")
-                                
+
                                 if plan in ["alfa", "beta"] and st.session_state.ws_vinculado:
-                                    msg = f"🐺 *¡PRESA!*%0A*Producto:* {r['titulo']}%0A*Precio:* ${precio_item}%0A*Link:* {r.get('link')}"
-                                    st.markdown(f"""<a href="https://wa.me/?text={msg}" target="_blank">
-                                        <button style="background-color:#25D366; color:white; border:none; padding:8px 12px; border-radius:5px; cursor:pointer;">
-                                            📲 Avisar por WhatsApp
-                                        </button></a>""", unsafe_allow_html=True)
-                    else:
-                        st.warning("Se detectó una oferta pero el formato es incompatible.")
+                                    msg = f"🐺 *PRESA!*\nProducto: {r['titulo']}\nPrecio: ${precio_item}\nLink: {r.get('link')}"
+                                    msg = msg.replace("\n", "%0A")  # para WhatsApp URL
+
+                                    st.markdown(
+                                        f"""
+                                        <a href=\"https://wa.me/?text={msg}\" target=\"_blank\">
+                                            <button style=\"background-color:#25D366;color:white;border:none;padding:8px 12px;border-radius:5px;cursor:pointer;\">
+                                                📲 Avisar por WhatsApp
+                                            </button>
+                                        </a>
+                                        """,
+                                        unsafe_allow_html=True
+                                    )
