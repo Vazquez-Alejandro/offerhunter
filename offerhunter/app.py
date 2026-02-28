@@ -7,6 +7,9 @@ import sys
 import os
 from auth.auth_supabase import supa_signup, supa_login, supa_reset_password
 from auth.supabase_client import supabase
+from db.database import obtener_cazas, guardar_caza
+from config import PLAN_LIMITS
+
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
@@ -57,16 +60,14 @@ if st.session_state.get("play_sound"):
 
     st.session_state["play_sound"] = False
 
-PLAN_LIMITS = {
-    "omega": 2,
-    "beta": 5,
-    "alfa": 10
-}
 
-# --- FUNCIONES DE BASE DE DATOS ---
+
 from auth.supabase_client import supabase
 
-def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, plan):
+DEFAULT_SOURCE = "mercadolibre"
+
+
+def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, plan, source=DEFAULT_SOURCE):
     """
     Guarda una caza en Supabase (tabla public.cazas) respetando límites por plan.
     Devuelve:
@@ -75,14 +76,13 @@ def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, pl
       - False si error
     """
     try:
-        from auth.supabase_client import supabase
-
         if not user_id:
             return False
 
         # Normalizar
         plan = (plan or "omega").strip().lower()
         estado = "activa"
+        source = (source or DEFAULT_SOURCE).strip().lower()
 
         # 1) Contar cazas activas del usuario (para límite)
         limite = PLAN_LIMITS.get(plan, 2)
@@ -110,54 +110,17 @@ def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, pl
             "tipo_alerta": (tipo_alerta or "piso").strip().lower(),
             "plan": plan,
             "estado": estado,
+            "source": source,          # ✅ NUEVO
             "last_check": None,
         }
 
         ins = supabase.table("cazas").insert(payload).execute()
 
-        # Si supabase devuelve data, ok
-        if ins.data:
-            return True
-
-        return False
+        return True if getattr(ins, "data", None) else False
 
     except Exception as e:
         print("[guardar_caza] error:", e)
         return False
-
-
-from auth.supabase_client import supabase
-
-def obtener_cazas(user_id: str, plan: str):
-    """
-    Devuelve lista de cazas del usuario desde Supabase Postgres.
-    - user_id: UUID (auth.users.id)
-    - plan: usado si querés filtrar por plan; si no, podés ignorarlo
-    """
-    if not user_id:
-        return []
-
-    try:
-        # Trae activas primero, más recientes arriba
-        q = (
-            supabase
-            .table("cazas")
-            .select("id, producto, link, precio_max, frecuencia, plan, estado, created_at, last_check")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-        )
-
-        # Si en tu modelo guardás el plan en la fila y querés filtrar:
-        # q = q.eq("plan", plan)
-
-        res = q.execute()
-
-        data = getattr(res, "data", None)
-        return data or []
-
-    except Exception as e:
-        print("[obtener_cazas] error:", e)
-        return []
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(
@@ -293,21 +256,46 @@ st.markdown("""
 params = st.query_params
 
 # --- RUTAS DE RECUPERACIÓN ---
-if "verify" in params:
-    if verify_user(params["verify"]):
-        st.success("✅ Email verificado")
-    else:
-        st.error("❌ Token inválido")
-    st.stop()
-elif "reset-password" in params:
-    st.title("Nueva contraseña")
-    p1 = st.text_input("Nueva contraseña", type="password")
-    if st.button("Guardar"):
-        if reset_password(params["reset-password"], p1):
-            st.success("✅ Contraseña actualizada")
-        else:
-            st.error("❌ Error o token expirado")
-    st.stop()
+# --- AUTH CALLBACKS (Supabase) ---
+params = st.query_params
+
+# Supabase suele volver con estos params cuando hacés reset desde el email
+access_token = params.get("access_token", None)
+refresh_token = params.get("refresh_token", None)
+type_param = params.get("type", None)
+
+# Si venimos de un reset de password, mostramos form para setear nueva pass
+if type_param == "recovery" and access_token:
+    st.title("🔐 Restablecer contraseña")
+
+    new_pass = st.text_input("Nueva contraseña", type="password")
+    new_pass2 = st.text_input("Repetir nueva contraseña", type="password")
+
+    if st.button("Guardar nueva contraseña"):
+        if not new_pass or len(new_pass) < 6:
+            st.error("La contraseña debe tener al menos 6 caracteres.")
+            st.stop()
+
+        if new_pass != new_pass2:
+            st.error("Las contraseñas no coinciden.")
+            st.stop()
+
+        try:
+            # 1) Setear sesión temporal con tokens del callback
+            supabase.auth.set_session({
+                "access_token": access_token,
+                "refresh_token": refresh_token or ""
+            })
+
+            # 2) Actualizar password
+            supabase.auth.update_user({"password": new_pass})
+
+            st.success("✅ Contraseña actualizada. Ya podés iniciar sesión.")
+            st.stop()
+
+        except Exception as e:
+            st.error(f"Error actualizando contraseña: {e}")
+            st.stop()
 
 # --- LÓGICA DE ACCESO ---
 if "user_logged" not in st.session_state:
