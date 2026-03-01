@@ -5,7 +5,9 @@ from urllib.parse import urlparse
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from auth.supabase_client import supabase
-from scraper.scraper_pro import hunt_offers
+
+# Scraper actual (MercadoLibre)
+from scraper.scraper_pro import hunt_offers as hunt_offers_ml
 
 # Evita crear mil schedulers por los reruns de Streamlit
 _scheduler = None
@@ -22,6 +24,29 @@ def _domain_from_url(url: str) -> str:
         return host or "unknown"
     except Exception:
         return "unknown"
+
+
+def _infer_source_from_url(url: str) -> str:
+    """
+    Fallback por dominio (por si el usuario eligió mal la fuente).
+    Devuelve un "source" canónico o 'unknown'.
+    """
+    d = _domain_from_url(url)
+
+    if "mercadolibre" in d:
+        return "mercadolibre"
+    if "fravega" in d:
+        return "fravega"
+    if "garbarino" in d:
+        return "garbarino"
+    if "tiendamia" in d:
+        return "tiendamia"
+    if "temu" in d:
+        return "temu"
+    if "tripstore" in d:
+        return "tripstore"
+
+    return "unknown"
 
 
 def _freq_to_minutes(freq: str) -> int:
@@ -95,6 +120,43 @@ def _clamp_minutes_by_plan(plan: str, mins: int) -> int:
     return max(mins, 60)
 
 
+def _safe_float(x, default=0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+# =========================
+# SCRAPER ROUTER
+# =========================
+def _scrape_by_source(source: str, link: str, producto: str, precio_max: float, tipo_alerta: str):
+    """
+    Devuelve lista de ofertas o lanza excepción controlada si no soportado.
+    Hoy solo soportamos MercadoLibre con hunt_offers_ml.
+    """
+    source = (source or "").strip().lower()
+    tipo_alerta = (tipo_alerta or "piso").strip().lower()
+
+    # Mapa de scrapers por source (sumás acá nuevas tiendas)
+    SCRAPER_BY_SOURCE = {
+        "mercadolibre": hunt_offers_ml,
+        # "fravega": hunt_offers_fravega,
+        # "garbarino": hunt_offers_garbarino,
+        # "tiendamia": hunt_offers_tiendamia,
+        # "temu": hunt_offers_temu,
+        # "tripstore": hunt_offers_tripstore,
+    }
+
+    fn = SCRAPER_BY_SOURCE.get(source)
+    if not fn:
+        raise ValueError(f"Fuente no soportada todavía: {source}")
+
+    # Firma actual: hunt_offers(link, producto, precio_max)
+    # Si en el futuro necesitás tipo_alerta, lo pasás cuando el scraper lo soporte.
+    return fn(link, producto, precio_max)
+
+
 # =========================
 # MAIN LOOP
 # =========================
@@ -107,14 +169,14 @@ def vigilar_ofertas():
     res = (
         supabase
         .table("cazas")
-        .select("id, user_id, producto, link, precio_max, frecuencia, plan, last_check")
+        .select("id, user_id, producto, link, precio_max, frecuencia, plan, last_check, source, tipo_alerta")
         .eq("estado", "activa")
         .execute()
     )
     cazas = res.data or []
     print(f"📦 Total cazas activas: {len(cazas)}")
 
-    # Tope anti-spam por corrida
+    # Tope anti-spam por corrida (cuando actives notificaciones)
     try:
         max_alerts_global = int(os.getenv("MAX_ALERTS_PER_RUN", "1"))
     except Exception:
@@ -123,12 +185,15 @@ def vigilar_ofertas():
     for c in cazas:
         caza_id = c.get("id")
         user_id = c.get("user_id")
-        producto = c.get("producto") or ""
-        link = c.get("link") or ""
-        precio_max = c.get("precio_max") or 0
+        producto = (c.get("producto") or "").strip()
+        link = (c.get("link") or "").strip()
+        precio_max = _safe_float(c.get("precio_max"), 0.0)
         frecuencia = c.get("frecuencia") or ""
         plan = (c.get("plan") or "omega").lower().strip()
         last_check = c.get("last_check")
+
+        source = (c.get("source") or "").strip().lower()
+        tipo_alerta = (c.get("tipo_alerta") or "piso").strip().lower()
 
         if not caza_id or not user_id or not link:
             continue
@@ -141,33 +206,53 @@ def vigilar_ofertas():
             continue
 
         domain = _domain_from_url(link)
-        print(f"🔎 Caza #{caza_id} | {producto} | max ${precio_max} | {domain} | cada {mins} min")
+
+        # ---------
+        # ROUTING PROFESIONAL (guardrails)
+        # ---------
+        inferred = _infer_source_from_url(link)
+
+        # Si no pudimos inferir, marcamos como unsupported para evitar ejecutar ML por error
+        inferred_or_unsupported = inferred if inferred != "unknown" else "unsupported"
+
+        # 1) Si source viene vacío/unknown -> usar inferred (o unsupported)
+        if not source or source == "unknown":
+            source = inferred_or_unsupported
+
+        # 2) Si source no coincide con el dominio inferido:
+        #    - si inferred es conocido => priorizar inferred
+        #    - si inferred es unknown => NO ejecutar ML si el dominio no es ML
+        else:
+            if inferred != "unknown" and inferred != source:
+                print(
+                    f"⚠ Source mismatch en caza {caza_id}: source='{source}' pero dominio sugiere '{inferred}'. Usando '{inferred}'."
+                )
+                source = inferred
+            elif source == "mercadolibre" and "mercadolibre" not in domain:
+                # Guardrail clave: NUNCA correr scraper ML fuera de ML
+                print(
+                    f"⚠ Guardrail: source='mercadolibre' pero dominio='{domain}'. Marcando como '{inferred_or_unsupported}' para evitar timeout."
+                )
+                source = inferred_or_unsupported
+
+        print(
+            f"🔎 Caza #{caza_id} | {producto} | max ${precio_max} | {domain} | source={source} | tipo={tipo_alerta} | cada {mins} min"
+        )
 
         try:
-            resultados = hunt_offers(link, producto, precio_max)
+            if source == "mercadolibre" and "mercadolibre" not in domain:
+                source = "unsupported"
+                
+            resultados = _scrape_by_source(source, link, producto, precio_max, tipo_alerta)
             items_found = len(resultados) if resultados else 0
             print(f"   📊 Resultados scraper: {items_found}")
 
             # 🔕 Notificaciones desactivadas por ahora (alertas.py sigue en SQLite)
-            # Cuando migremos scraper/alertas.py a Supabase, activamos esto:
-            #
-            # from scraper.alertas import notificar_oferta_encontrada
-            # sent = 0
-            # for oferta in resultados or []:
-            #     if sent >= max_alerts_global:
-            #         break
-            #     link_oferta = oferta.get("link")
-            #     precio = oferta.get("precio")
-            #     if not link_oferta or precio is None:
-            #         continue
-            #     try:
-            #         precio_num = float(precio)
-            #     except Exception:
-            #         continue
-            #     if precio_num > float(precio_max):
-            #         continue
-            #     notificar_oferta_encontrada(user_id, oferta)
-            #     sent += 1
+            # Cuando migremos alertas a Supabase, activamos aquí.
+
+        except ValueError as ve:
+            # Fuente no soportada
+            print(f"🚫 {ve} | caza {caza_id} | {link}")
 
         except Exception as e:
             print(f"⚠ Error en caza {caza_id}: {e}")

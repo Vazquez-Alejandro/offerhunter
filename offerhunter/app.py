@@ -17,6 +17,9 @@ WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
 from dotenv import load_dotenv
 load_dotenv()
 
+DEBUG = os.getenv('DEBUG', '0') == '1'
+
+
 from auth.auth_supabase import (
     supa_login,
     supa_signup,
@@ -25,6 +28,33 @@ from auth.auth_supabase import (
 
 from scraper.scraper_pro import hunt_offers as rastrear_busqueda
 from engine import start_engine
+
+from urllib.parse import urlparse
+
+def _domain_from_url(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower().strip()
+        if host.startswith("www."):
+            host = host[4:]
+        return host or "unknown"
+    except Exception:
+        return "unknown"
+
+def _infer_source_from_url(url: str) -> str:
+    d = _domain_from_url(url)
+    if "mercadolibre" in d:
+        return "mercadolibre"
+    if "fravega" in d:
+        return "fravega"
+    if "garbarino" in d:
+        return "garbarino"
+    if "tiendamia" in d:
+        return "tiendamia"
+    if "temu" in d:
+        return "temu"
+    if "tripstore" in d:
+        return "tripstore"
+    return "unknown"
 
 # ✅ Admin por email (seguro)
 
@@ -606,11 +636,11 @@ else:
 
             # ⚠️ FRECUENCIA SIEMPRE DEFINIDA ANTES DEL BOTÓN
             n_freq = st.selectbox("Frecuencia", freq_options)
-            
-            # DEBUG UI + TERMINAL
-            debug_ui = f"DEBUG UI | tipo_db={tipo_db} | n_price={n_price} | type={type(n_price)}"
-            st.caption(debug_ui)
-            print(debug_ui)
+            # DEBUG UI + TERMINAL (activar con DEBUG=1)
+            if DEBUG:
+                debug_ui = f"DEBUG UI | tipo_db={tipo_db} | n_price={n_price} | type={type(n_price)}"
+                st.caption(debug_ui)
+                print(debug_ui)
 
             if st.button("Lanzar"):
                 user_id = getattr(user, "id", None)
@@ -619,12 +649,12 @@ else:
                     precio_max = int(float(n_price))
                 except Exception:
                     precio_max = 0
-
-                debug_lanzar = (
-                    f"DEBUG LANZAR | user_id={user_id} | tipo_db={tipo_db} | "
-                    f"precio_max={precio_max} | freq={n_freq} | plan={plan}"
-                )
-                st.info(debug_lanzar)
+                if DEBUG:
+                    debug_lanzar = (
+                        f"DEBUG LANZAR | user_id={user_id} | tipo_db={tipo_db} | "
+                        f"precio_max={precio_max} | freq={n_freq} | plan={plan}"
+                    )
+                    st.info(debug_lanzar)
                 print(debug_lanzar)
 
                 if tipo_db == "piso" and precio_max <= 0:
@@ -655,16 +685,16 @@ else:
     # --- LISTADO DE BÚSQUEDAS ACTIVAS ---
     if st.session_state.busquedas:
         st.subheader(f"Mis Cacerías ({plan.capitalize()} 🐺)")
-        
+
         for i, b in enumerate(st.session_state.busquedas):
             with st.container(border=True):
                 col_info, col_btns = st.columns([3, 1])
-                
+
                 with col_info:
-                    precio_meta = b.get('precio_max', 0)
-                    tipo = b.get('tipo_alerta', 'piso')
-                    label_precio = f"Máx: ${precio_meta:,}" if tipo == 'piso' else f"Objetivo: {precio_meta}% desc."
-                    
+                    precio_meta = b.get("precio_max", 0)
+                    tipo = (b.get("tipo_alerta") or "piso").strip().lower()
+                    label_precio = f"Máx: ${int(precio_meta):,}" if tipo == "piso" else f"Objetivo: {precio_meta}% desc."
+
                     kw = (
                         b.get("keyword")
                         or b.get("producto")
@@ -673,78 +703,109 @@ else:
                         or ""
                     )
 
-                    st.markdown(f"**🎯 {kw}** ({tipo.capitalize()})")                    
+                    st.markdown(f"**🎯 {kw}** ({tipo.capitalize()})")
                     url = (b.get("url") or b.get("link") or "")
                     st.caption(f"📍 {url[:50]}...")
-                    st.write(f"💰 {label_precio} | ⏱️ {b['frecuencia']}")
-                
-                    with col_btns:
+                    st.write(f"💰 {label_precio} | ⏱️ {b.get('frecuencia','')}")
 
-                        # 🐺 BOTÓN OLFATEAR
-                        if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
-                            with st.spinner("Rastreando..."):
+                # ✅ OJO: col_btns va afuera de col_info
+                with col_btns:
+                    # 🐺 BOTÓN OLFATEAR
+                    if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
+                        with st.spinner("Rastreando..."):
+                            from scraper.scraper_pro import hunt_offers  # hoy solo ML
 
-                                from scraper.scraper_pro import hunt_offers
+                            kw2 = b.get("keyword") or b.get("producto") or ""
+                            url2 = b.get("url") or b.get("link") or ""
+                            precio2 = int(b.get("precio_max") or 0)
 
-                                kw = b.get("keyword") or b.get("producto") or ""
-                                url = b.get("url") or b.get("link") or ""
-                                precio = b.get("precio_max") or b.get("precio_max") or 0
+                            # ✅ Router mínimo: no intentes ML si no es ML
+                            source = (b.get("source") or "").strip().lower()
+                            domain = _domain_from_url(url2)
+                            inferred = _infer_source_from_url(url2)
 
-                                resultados = hunt_offers(
-                                    url,
-                                    kw,
-                                    precio
-                                )
+                            domain = _domain_from_url(url2)
+                            if "mercadolibre" not in domain:
+                                st.warning(f"Fuente no soportada todavía (no ML): {domain}")
+                                st.session_state[f"last_res_{i}"] = []
 
-                                res_key = f"last_res_{i}"
-                                st.session_state[res_key] = resultados
+                                from urllib.parse import urlparse
 
+                                host = urlparse(str(url2)).netloc.lower().strip()
+                                if "mercadolibre" not in host:
+                                    st.warning(f"Fuente no soportada todavía (solo ML). URL: {url2}")
+                                    resultados = []
+                                else:
+                                    try:
+                                        resultados = hunt_offers(url2, kw2, precio2)
+                                    except Exception as e:
+                                        st.warning(f"Error al rastrear (ML): {e}")
+                                        resultados = []
+                                        
+                            # 1) si no hay source, usar lo inferido (o unsupported)
+                            if not source or source == "unknown":
+                                source = inferred if inferred != "unknown" else "unsupported"
+
+                            # 2) si el usuario/source no coincide con el dominio, priorizar dominio
+                            if inferred != "unknown" and inferred != source:
+                                source = inferred
+
+                            # 3) guardrail CLAVE: nunca correr scraper ML fuera de ML
+                            if source == "mercadolibre" and "mercadolibre" not in domain:
+                                source = inferred if inferred != "unknown" else "unsupported"
+
+                            if source != "mercadolibre":
+                                st.warning(f"Fuente no soportada todavía: {source} (URL: {url2})")
+                                st.session_state[f"last_res_{i}"] = []
+                            else:
+                                resultados = hunt_offers(url2, kw2, precio2)
+                                st.session_state[f"last_res_{i}"] = resultados or []
                                 if resultados:
                                     st.session_state["play_sound"] = True
 
-                                st.rerun()
+                        st.rerun()
 
-                        # 🗑 BOTÓN ELIMINAR
-                        if st.button("🗑 Eliminar", key=f"del_{i}", use_container_width=True):
+                    # 🗑 BOTÓN ELIMINAR
+                    if st.button("🗑 Eliminar", key=f"del_{i}", use_container_width=True):
+                        from auth.supabase_client import supabase
+                        supabase.table("cazas").delete().eq("id", b["id"]).eq("user_id", user_id).execute()
+                        st.success("Caza eliminada 🐺")
+                        st.rerun()
 
-                            from auth.supabase_client import supabase
+        # --- MOSTRAR RESULTADOS ---
+        res_key = f"last_res_{i}"
+        if res_key in st.session_state and st.session_state[res_key]:
+            ofertas = st.session_state[res_key]
 
-                            # Borra SOLO si pertenece al usuario logueado (seguridad)
-                            supabase.table("cazas").delete().eq("id", b["id"]).eq("user_id", user_id).execute()
+            for r in ofertas:
+                if isinstance(r, dict) and "titulo" in r:
+                    precio_item = int(str(r.get("precio", 0)).replace(".", ""))
+                    precio_objetivo = int(b.get("precio_max", 0) or 0)
+                    tipo_alerta_row = (b.get("tipo_alerta") or "piso").strip().lower()
 
-                            st.success("Caza eliminada 🐺")
-                            st.rerun()                   
-            # --- MOSTRAR RESULTADOS ---
-            res_key = f"last_res_{i}"
-            if res_key in st.session_state and st.session_state[res_key]:
-                ofertas = st.session_state[res_key]
-                #st.caption(f"DEBUG: {len(ofertas)} presas pasaron el filtro de nombre.")
+                    pasa = (precio_item <= precio_objetivo) if tipo_alerta_row == "piso" else True
 
-                for r in ofertas:
-                    if isinstance(r, dict) and 'titulo' in r:
-                        precio_item = int(str(r.get('precio', 0)).replace('.', ''))
-                        precio_objetivo = int(b.get('precio_max', 0) or 0)
-                        tipo_alerta_row = (b.get('tipo_alerta') or 'piso').strip().lower()
+                    if pasa:
+                        with st.expander(f"🍖 {r.get('titulo','')} - ${precio_item:,}", expanded=True):
+                            st.markdown(f"[Ver oferta en la web]({r.get('link', '#')})")
 
-                        # Para 'piso' aplicamos el filtro por precio.
-                        # Para 'descuento', asumimos que el scraper ya filtró y mostramos lo que venga.
-                        pasa = (precio_item <= precio_objetivo) if tipo_alerta_row == 'piso' else True
+                            # WhatsApp (sin HTML, sin unsafe_allow_html)
+                            if plan in ["alfa", "beta"] and st.session_state.get("ws_vinculado"):
+                                titulo = r.get("titulo", "")
+                                link_oferta = r.get("link", "")
+                                msg = (
+                                    "🐺 PRESA!\n"
+                                    f"Producto: {titulo}\n"
+                                    f"Precio: ${precio_item}\n"
+                                    f"Link: {link_oferta}"
+                                )
+                                wa_url = f"https://wa.me/?text={quote(msg)}"
 
-                        if pasa:
-                            with st.expander(f"🍖 {r['titulo']} - ${precio_item:,}", expanded=True):
-                                st.markdown(f"[Ver oferta en la web]({r.get('link', '#')})")
-
-                                if plan in ["alfa", "beta"] and st.session_state.ws_vinculado:
-                                    msg = f"🐺 *PRESA!*\nProducto: {r['titulo']}\nPrecio: ${precio_item}\nLink: {r.get('link')}"
-                                    msg = msg.replace("\n", "%0A")  # para WhatsApp URL
-
-                                    st.markdown(
-                                        f"""
-                                        <a href=\"https://wa.me/?text={msg}\" target=\"_blank\">
-                                            <button style=\"background-color:#25D366;color:white;border:none;padding:8px 12px;border-radius:5px;cursor:pointer;\">
-                                                📲 Avisar por WhatsApp
-                                            </button>
-                                        </a>
-                                        """,
-                                        unsafe_allow_html=True
-                                    )
+                                # botón si existe tu versión, si no link normal
+                                try:
+                                    st.link_button("📲 Avisar por WhatsApp", wa_url, use_container_width=True)
+                                except Exception:
+                                    st.markdown(f"[📲 Avisar por WhatsApp]({wa_url})")
+                    else:
+                        st.warning("Se detectó una oferta pero el formato es incompatible.")
+ 

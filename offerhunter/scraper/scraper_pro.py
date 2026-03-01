@@ -1,11 +1,21 @@
-from playwright.sync_api import sync_playwright
+from __future__ import annotations
+
 import re
+from urllib.parse import urlparse
+
+from playwright.sync_api import sync_playwright
+
+
+def _is_mercadolibre_url(url: str) -> bool:
+    try:
+        host = urlparse(str(url)).netloc.lower().strip()
+        return "mercadolibre" in host
+    except Exception:
+        return False
 
 
 def _to_int_price(text: str) -> int | None:
-    """
-    Convierte "$ 1.234.567" / "$1,234,567" en int.
-    """
+    """Convierte "$ 1.234.567" / "$1,234,567" a int."""
     if not text:
         return None
     m = re.search(r"\$\s*([\d\.\,]+)", text)
@@ -14,22 +24,33 @@ def _to_int_price(text: str) -> int | None:
     raw = m.group(1).replace(".", "").replace(",", "")
     try:
         return int(raw)
-    except:
+    except Exception:
         return None
 
 
 def hunt_offers(url_input: str, keyword: str, max_price: int):
-    """
-    ✅ SOLO MERCADOLIBRE
-    Devuelve: [{"titulo": str, "precio": int, "link": str}, ...]
-    """
+    """Scraper de **MercadoLibre**.
 
-    # Si te pasan "ps5" sin esquema, armamos búsqueda de ML
+    Parámetros:
+      - url_input: URL de listado/búsqueda de ML (recomendado).
+      - keyword: keyword para filtrar por texto (simple contains).
+      - max_price: precio máximo (int).
+
+    Devuelve:
+      List[Dict]: [{"titulo": str, "precio": int, "link": str}, ...]
+    """
+    if url_input and url_input.startswith("http") and not _is_mercadolibre_url(url_input):
+        raise ValueError(f"[hunt_offers] SOLO MercadoLibre. URL recibida: {url_input}")
+
+    # Si pasan keyword sin URL, armamos búsqueda en ML
     if url_input and url_input.startswith("http"):
         target_url = url_input
     else:
         slug = (keyword or "").strip().replace(" ", "-")
         target_url = f"https://listado.mercadolibre.com.ar/{slug}"
+
+    if not _is_mercadolibre_url(target_url):
+        raise ValueError(f"[hunt_offers] SOLO MercadoLibre. URL recibida: {target_url}")
 
     keyword_l = (keyword or "").strip().lower()
     presas = []
@@ -46,24 +67,27 @@ def hunt_offers(url_input: str, keyword: str, max_price: int):
         page = context.new_page()
 
         try:
-            print(f"🕵️ Sabueso rastreando en: {target_url}")
             page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
 
-            # Esperamos contenedores reales de resultados
-            page.wait_for_selector("div.ui-search-result__wrapper, div.poly-card", timeout=20000)
+            # Resultados ML (clases típicas)
+            try:
+                page.wait_for_selector("div.ui-search-result__wrapper, div.poly-card", timeout=5000)
+            except Exception:
+                print("⚠ No se encontraron resultados o selector inválido.")
+                browser.close()
+                return []
 
             # Scroll suave (a veces ML carga lazy)
             page.mouse.wheel(0, 1200)
             page.wait_for_timeout(1500)
 
             items = page.locator("div.ui-search-result__wrapper, div.poly-card").all()
-            print(f"🔎 Items en el radar: {len(items)}")
 
             for item in items[:60]:
                 try:
                     texto = item.inner_text()
 
-                    # Filtro keyword (si no querés filtrar, comentá estas 2 líneas)
+                    # Filtro keyword (si viene)
                     if keyword_l and keyword_l not in texto.lower():
                         continue
 
@@ -71,7 +95,7 @@ def hunt_offers(url_input: str, keyword: str, max_price: int):
                     if precio is None:
                         continue
 
-                    if precio > int(max_price):
+                    if int(precio) > int(max_price):
                         continue
 
                     # Link
@@ -83,35 +107,19 @@ def hunt_offers(url_input: str, keyword: str, max_price: int):
                     if link and link.startswith("/"):
                         link = "https://www.mercadolibre.com.ar" + link
 
-                    # Título (mejor que poner keyword)
-                    titulo = texto.split("\n")[0].strip()
+                    # Título: primer renglón
+                    titulo = (texto.split("\n")[0] or "").strip()
                     if not titulo:
                         titulo = keyword.capitalize() if keyword else "Oferta"
 
-                    presas.append({
-                        "titulo": titulo[:120],
-                        "precio": precio,
-                        "link": link or target_url
-                    })
-
-                    # debug opcional:
-                    # print(f"   ✅ Encontré: {titulo[:25]}... | ${precio}")
-
-                except:
+                    presas.append({"titulo": titulo[:120], "precio": int(precio), "link": link or target_url})
+                except Exception:
                     continue
 
-        except Exception as e:
-            print(f"🚨 Error en la cacería: {e}")
+            return presas
 
         finally:
-            context.close()
-            browser.close()
-
-    return presas
-
-
-if __name__ == "__main__":
-    res = hunt_offers("https://listado.mercadolibre.com.ar/iphone-15", "iphone 15", 1000000)
-    print(f"🏆 Resultados: {len(res)}")
-    for r in res[:5]:
-        print(r)
+            try:
+                context.close()
+            finally:
+                browser.close()
