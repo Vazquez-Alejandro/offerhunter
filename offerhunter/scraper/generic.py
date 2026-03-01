@@ -2,17 +2,30 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
 
+# =========================
+# HELPERS
+# =========================
+
 def _to_int_price(text: str) -> int | None:
+    """
+    Convierte:
+      "$ 41.999,00"
+      "$41.999"
+      "41999"
+    a int.
+    """
     if not text:
         return None
-    m = re.search(r"\$?\s*([\d\.\,]+)", text)
+
+    m = re.search(r"([\d\.\,]+)", text)
     if not m:
         return None
+
     raw = m.group(1).replace(".", "").replace(",", "")
     try:
         return int(raw)
@@ -20,10 +33,16 @@ def _to_int_price(text: str) -> int | None:
         return None
 
 
+# =========================
+# GENERIC SCRAPER
+# =========================
+
 def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
     """
     Scraper GENERIC para tiendas chicas / HTML simple.
-    No apto para monstruos React complejos.
+    No pensado para monstruos React complejos.
+    Devuelve:
+      List[{"titulo": str, "precio": int, "link": str}]
     """
 
     keyword_l = (keyword or "").strip().lower()
@@ -65,7 +84,7 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
 
                             if titulo and precio:
                                 precio = int(float(precio))
-                                if precio <= max_price:
+                                if precio <= int(max_price):
                                     presas.append({
                                         "titulo": titulo[:120],
                                         "precio": precio,
@@ -79,13 +98,80 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
                 return presas[:40]
 
             # ==========================================
-            # 2️⃣ Fallback heurístico simple
+            # 2️⃣ Intentar por "product cards"
+            # Compatible con Magento / WooCommerce / Shopify
             # ==========================================
-            items = page.locator("a").all()
 
-            for item in items[:200]:
+            cards = page.locator(
+                "li.product-item, "
+                "div.product-card, "
+                "div.product-item-info"
+            ).all()
+
+            for card in cards[:40]:
                 try:
-                    texto = item.inner_text()
+                    title_el = card.locator(
+                        "a.product-item-link, "
+                        "a.product-name, "
+                        "a[href]"
+                    ).first
+
+                    price_el = card.locator(
+                        ".price, "
+                        ".product-price, "
+                        "[class*='price']"
+                    ).first
+
+                    if not price_el:
+                        continue
+
+                    if not price_el.is_visible():
+                        continue
+
+                    titulo = (title_el.inner_text() or "").strip()
+                    try:
+                        precio_txt = (price_el.inner_text(timeout=1500) or "").strip()
+                    except:
+                        continue
+
+                    if not titulo or not precio_txt:
+                        continue
+
+                    if keyword_l and keyword_l not in titulo.lower():
+                        continue
+
+                    precio = _to_int_price(precio_txt)
+                    if not precio:
+                        continue
+
+                    if precio > int(max_price):
+                        continue
+
+                    link = title_el.get_attribute("href")
+                    if link:
+                        link = urljoin(url_input, link)
+
+                    presas.append({
+                        "titulo": titulo[:120],
+                        "precio": int(precio),
+                        "link": link or url_input
+                    })
+
+                except Exception:
+                    continue
+
+            if presas:
+                return presas[:40]
+
+            # ==========================================
+            # 3️⃣ Último fallback (buscar links con precio en texto)
+            # ==========================================
+
+            links = page.locator("a").all()
+
+            for link_el in links[:200]:
+                try:
+                    texto = link_el.inner_text()
                     if not texto:
                         continue
 
@@ -96,19 +182,19 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
                     if not precio:
                         continue
 
-                    if precio > max_price:
+                    if precio > int(max_price):
                         continue
 
-                    link = item.get_attribute("href")
-                    if link:
-                        link = urljoin(url_input, link)
+                    href = link_el.get_attribute("href")
+                    if href:
+                        href = urljoin(url_input, href)
 
                     titulo = texto.split("\n")[0].strip()
 
                     presas.append({
                         "titulo": titulo[:120],
-                        "precio": precio,
-                        "link": link or url_input
+                        "precio": int(precio),
+                        "link": href or url_input
                     })
 
                 except Exception:
@@ -119,5 +205,10 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
         finally:
             try:
                 context.close()
-            finally:
+            except:
+                pass
+
+            try:
                 browser.close()
+            except:
+                pass

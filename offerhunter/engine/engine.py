@@ -1,15 +1,14 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from apscheduler.schedulers.background import BackgroundScheduler
-
-from scraper.generic import hunt_offers_generic
 
 from auth.supabase_client import supabase
 
 # Scraper actual (MercadoLibre)
 from scraper.scraper_pro import hunt_offers as hunt_offers_ml
+from scraper.generic import hunt_offers_generic
 
 # Evita crear mil schedulers por los reruns de Streamlit
 _scheduler = None
@@ -90,22 +89,33 @@ def _freq_to_minutes(freq: str) -> int:
     return int(digits) if digits else 60
 
 
-def _parse_dt(value) -> datetime:
+def _parse_dt_utc(value) -> datetime | None:
     """
-    Supabase suele devolver ISO string o datetime (según cliente).
+    Supabase suele devolver ISO string (a veces con Z o +00:00) o datetime.
+    Retorna datetime timezone-aware en UTC, o None si no hay/parsea.
     """
     if not value:
-        return datetime(1970, 1, 1)
+        return None
 
     if isinstance(value, datetime):
-        return value
+        dt = value
+    else:
+        s = str(value).strip()
+        # normalizar Z a offset explícito
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
 
-    s = str(value).strip()
-    s = s.replace("T", " ").replace("Z", "")
-    try:
-        return datetime.fromisoformat(s)
-    except Exception:
-        return datetime(1970, 1, 1)
+    # si viene naive, asumimos UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+
+    return dt
 
 
 def _clamp_minutes_by_plan(plan: str, mins: int) -> int:
@@ -134,8 +144,8 @@ def _safe_float(x, default=0.0) -> float:
 # =========================
 def _scrape_by_source(source: str, link: str, producto: str, precio_max: float, tipo_alerta: str):
     """
-    Devuelve lista de ofertas.
-    Si la tienda no está soportada aún, lanza excepción controlada.
+    Devuelve lista de ofertas o lanza excepción controlada si no soportado.
+    Hoy solo soportamos MercadoLibre con hunt_offers_ml.
     """
     source = (source or "").strip().lower()
     tipo_alerta = (tipo_alerta or "piso").strip().lower()
@@ -143,17 +153,18 @@ def _scrape_by_source(source: str, link: str, producto: str, precio_max: float, 
     SCRAPER_BY_SOURCE = {
         "mercadolibre": hunt_offers_ml,
         "generic": hunt_offers_generic,
-        # Futuras tiendas:
-        # "fravega": hunt_offers_fravega,
-        # "garbarino": hunt_offers_garbarino,
-        # ...
     }
-
     fn = SCRAPER_BY_SOURCE.get(source)
 
+    # Si no hay scraper específico, usar generic
     if not fn:
-        raise ValueError("Tienda no soportada, estamos trabajando en ello.")
+        fn = SCRAPER_BY_SOURCE.get("generic")
 
+    if not fn:
+        raise ValueError("Tienda no soportada todavía, estamos trabajando en ello.")
+
+    # Firma actual: hunt_offers(link, producto, precio_max)
+    # Si en el futuro necesitás tipo_alerta, lo pasás cuando el scraper lo soporte.
     return fn(link, producto, precio_max)
 
 
@@ -163,7 +174,8 @@ def _scrape_by_source(source: str, link: str, producto: str, precio_max: float, 
 def vigilar_ofertas():
     print("🐺 Vigilando ofertas...")
 
-    now = datetime.utcnow()
+    # IMPORTANTE: usar datetime aware en UTC (evita naive/aware mismatch)
+    now = datetime.now(timezone.utc)
 
     # Traer cazas activas desde Supabase
     res = (
@@ -201,8 +213,8 @@ def vigilar_ofertas():
         mins = _freq_to_minutes(frecuencia)
         mins = _clamp_minutes_by_plan(plan, mins)
 
-        last_dt = _parse_dt(last_check)
-        if now - last_dt < timedelta(minutes=mins):
+        last_dt = _parse_dt_utc(last_check)
+        if last_dt and (now - last_dt) < timedelta(minutes=mins):
             continue
 
         domain = _domain_from_url(link)
@@ -241,8 +253,8 @@ def vigilar_ofertas():
 
         try:
             if source == "mercadolibre" and "mercadolibre" not in domain:
-                source = "unsupported"
-                
+                source = inferred if inferred != "unknown" else "generic"
+
             resultados = _scrape_by_source(source, link, producto, precio_max, tipo_alerta)
             items_found = len(resultados) if resultados else 0
             print(f"   📊 Resultados scraper: {items_found}")
@@ -251,7 +263,7 @@ def vigilar_ofertas():
             # Cuando migremos alertas a Supabase, activamos aquí.
 
         except ValueError as ve:
-            # Fuente no soportada
+            # Tienda no soportada
             print(f"🚫 {ve} | caza {caza_id} | {link}")
 
         except Exception as e:
@@ -261,7 +273,7 @@ def vigilar_ofertas():
             # Siempre actualizamos last_check para evitar loops infinitos si algo falla
             try:
                 supabase.table("cazas").update(
-                    {"last_check": datetime.utcnow().isoformat()}
+                    {"last_check": datetime.now(timezone.utc).isoformat()}
                 ).eq("id", caza_id).execute()
             except Exception as e:
                 print(f"⚠ No pude actualizar last_check en caza {caza_id}: {e}")

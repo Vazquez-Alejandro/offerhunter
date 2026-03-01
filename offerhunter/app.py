@@ -1,811 +1,317 @@
-import streamlit as st
-import base64
-import requests
-from bs4 import BeautifulSoup
-import subprocess
-import sys
-import os
-from auth.auth_supabase import supa_signup, supa_login, supa_reset_password
-from auth.supabase_client import supabase
-from db.database import obtener_cazas, guardar_caza
-from config import PLAN_LIMITS
+from __future__ import annotations
+
+import json
+import re
+from urllib.parse import urljoin
+
+from playwright.sync_api import sync_playwright
 
 
-BASE_DIR = os.path.dirname(__file__)
-WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
+# =========================
+# HELPERS
+# =========================
 
-from dotenv import load_dotenv
-load_dotenv()
+def _to_int_price(text: str) -> int | None:
+    """
+    Convierte:
+      "$ 41.999,00"
+      "$41.999"
+      "41999"
+    a int.
+    """
+    if not text:
+        return None
 
-DEBUG = os.getenv('DEBUG', '0') == '1'
+    m = re.search(r"([\d\.\,]+)", text)
+    if not m:
+        return None
 
-
-from auth.auth_supabase import (
-    supa_login,
-    supa_signup,
-    supa_reset_password,
-)
-
-from scraper.scraper_pro import hunt_offers as rastrear_busqueda
-from engine import start_engine
-
-from urllib.parse import urlparse
-
-def _domain_from_url(url: str) -> str:
+    raw = m.group(1).replace(".", "").replace(",", "")
     try:
-        host = urlparse(url).netloc.lower().strip()
-        if host.startswith("www."):
-            host = host[4:]
-        return host or "unknown"
+        return int(raw)
     except Exception:
-        return "unknown"
-
-def _infer_source_from_url(url: str) -> str:
-    d = _domain_from_url(url)
-    if "mercadolibre" in d:
-        return "mercadolibre"
-    if "fravega" in d:
-        return "fravega"
-    if "garbarino" in d:
-        return "garbarino"
-    if "tiendamia" in d:
-        return "tiendamia"
-    if "temu" in d:
-        return "temu"
-    if "tripstore" in d:
-        return "tripstore"
-    return "unknown"
-
-# ✅ Admin por email (seguro)
-
-def get_user_profile(user_id: str):
-    res = (
-        supabase
-        .table("profiles")
-        .select("plan, role, username")
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    rows = res.data or []
-    return rows[0] if rows else {}
+        return None
 
 
-if "play_sound" not in st.session_state:
-    st.session_state["play_sound"] = False
+# =========================
+# GENERIC SCRAPER
+# =========================
 
-if st.session_state.get("play_sound"):
-    with open(WOLF_PATH, "rb") as f:
-        audio_bytes = f.read()
-        b64 = base64.b64encode(audio_bytes).decode()
-
-    st.markdown(
-        f"""
-        <audio autoplay style="display:none;">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.session_state["play_sound"] = False
-
-
-
-from auth.supabase_client import supabase
-
-DEFAULT_SOURCE = "mercadolibre"
-
-
-def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, plan, source=DEFAULT_SOURCE):
+def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
     """
-    Guarda una caza en Supabase (tabla public.cazas) respetando límites por plan.
+    Scraper GENERIC para tiendas chicas / HTML simple.
+    No pensado para monstruos React complejos.
     Devuelve:
-      - True si guardó
-      - "limite" si alcanzó el límite del plan
-      - False si error
+      List[{"titulo": str, "precio": int, "link": str}]
     """
-    try:
-        if not user_id:
-            return False
+    keyword_l = (keyword or "").strip().lower()
+    presas: list[dict] = []
 
-        # Normalizar
-        plan = (plan or "omega").strip().lower()
-        estado = "activa"
-        source = (source or DEFAULT_SOURCE).strip().lower()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
 
-        # 1) Contar cazas activas del usuario (para límite)
-        limite = PLAN_LIMITS.get(plan, 2)
-
-        count_res = (
-            supabase
-            .table("cazas")
-            .select("id", count="exact")
-            .eq("user_id", user_id)
-            .eq("estado", "activa")
-            .execute()
+        # Un user agent común ayuda en algunas tiendas
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
         )
-        activas = int(getattr(count_res, "count", 0) or 0)
+        page = context.new_page()
 
-        if activas >= limite:
-            return "limite"
-
-        # 2) Insertar caza
-        payload = {
-            "user_id": user_id,
-            "producto": (producto or "").strip(),
-            "link": (url or "").strip(),
-            "precio_max": precio_max,
-            "frecuencia": (frecuencia or "").strip(),
-            "tipo_alerta": (tipo_alerta or "piso").strip().lower(),
-            "plan": plan,
-            "estado": estado,
-            "source": source,          # ✅ NUEVO
-            "last_check": None,
-        }
-
-        ins = supabase.table("cazas").insert(payload).execute()
-
-        return True if getattr(ins, "data", None) else False
-
-    except Exception as e:
-        print("[guardar_caza] error:", e)
-        return False
-
-# --- CONFIGURACIÓN ---
-st.set_page_config(
-    page_title="OfferHunter 🐺", 
-    layout="wide", 
-    page_icon="🐺"
-)
-
-if "busquedas" not in st.session_state:
-    st.session_state["busquedas"] = []
-
-if "forms_extra" not in st.session_state:
-    st.session_state["forms_extra"] = 0   
-
-if "ws_vinculado" not in st.session_state:
-    st.session_state["ws_vinculado"] = False
-
-def get_base64_logo(path):
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-        return base64.b64encode(data).decode()
-    except:
-        return ""
-    
-# CSS extra SOLO para pantalla de login/registro
-if "user_logged" not in st.session_state:
-    st.markdown("""
-    <style>
-      .block-container{
-        max-width: 760px !important;
-        padding-top: 2.2rem !important;
-      }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- CSS GLOBAL ---
-st.markdown("""
-    <style>
-        .contenedor-logo { display: flex; justify-content: center; }
-        .aura { width: 250px; transform: scale(0.85); -webkit-mask-image: radial-gradient(circle, black 40%, rgba(0,0,0,0) 70%); }
-        .plan-card {
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 15px;
-            padding: 25px;
-            min-height: 380px;
-            display: flex;
-            flex-direction: column;
-            transition: transform 0.3s;
-        }
-        .plan-card:hover {
-            transform: translateY(-5px);
-            border-color: #4da3ff;
-        }
-        .plan-title { color: #4da3ff; text-align: center; margin-bottom: 15px; }
-        .plan-price { font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 20px; }
-        .plan-features { list-style: none; padding: 0; flex-grow: 1; }
-        .plan-features li { margin-bottom: 10px; font-size: 14px; }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<style>
-.logo-wrap{
-  display:flex;
-  justify-content:center;
-  margin: 0.5rem 0 1rem 0;
-}
-
-/* círculo blanco + difuminado */
-.logo-bg{
-  width: 220px;
-  height: 220px;
-  border-radius: 999px;
-background: radial-gradient(circle,
-  rgba(255,255,255,1)    0%,
-  rgba(255,255,255,0.95) 40%,
-  rgba(255,255,255,0.75) 60%,
-  rgba(255,255,255,0.40) 75%,
-  rgba(255,255,255,0.00) 90%
-);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  /* un poquito de glow suave */
-  filter: drop-shadow(0 12px 24px rgba(0,0,0,0.35));
-}
-
-.logo-img{
-  width: 220px;
-  height: auto;
-  /* opcional: si el png tiene bordes feos, esto ayuda */
-  border-radius: 12px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-    <style>
-    /* --- FIX cards planes cuando el contenedor es angosto --- */
-        .plan-title{
-        font-size: 1.15rem;
-        line-height: 1.2;
-        word-break: normal;
-        }
-        .plan-price{
-        font-size: 1.15rem;
-        }
-        .plan-features li{
-        font-size: 0.92rem;
-        line-height: 1.25;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-    <style>
-        /* Contenedor “angosto” (login/registro/tabs) */
-        .narrow {
-        max-width: 520px;
-        margin: 0 auto;
-        }
-
-        /* Contenedor “ancho” (cards) */
-        .wide {
-        max-width: 1100px;
-        margin: 0 auto;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-params = st.query_params
-
-# --- RUTAS DE RECUPERACIÓN ---
-# --- AUTH CALLBACKS (Supabase) ---
-params = st.query_params
-
-# Supabase suele volver con estos params cuando hacés reset desde el email
-access_token = params.get("access_token", None)
-refresh_token = params.get("refresh_token", None)
-type_param = params.get("type", None)
-
-# Si venimos de un reset de password, mostramos form para setear nueva pass
-if type_param == "recovery" and access_token:
-    st.title("🔐 Restablecer contraseña")
-
-    new_pass = st.text_input("Nueva contraseña", type="password")
-    new_pass2 = st.text_input("Repetir nueva contraseña", type="password")
-
-    if st.button("Guardar nueva contraseña"):
-        if not new_pass or len(new_pass) < 6:
-            st.error("La contraseña debe tener al menos 6 caracteres.")
-            st.stop()
-
-        if new_pass != new_pass2:
-            st.error("Las contraseñas no coinciden.")
-            st.stop()
+        # Timeouts duros para que nunca se cuelgue el engine
+        page.set_default_timeout(2500)
+        page.set_default_navigation_timeout(12000)
 
         try:
-            # 1) Setear sesión temporal con tokens del callback
-            supabase.auth.set_session({
-                "access_token": access_token,
-                "refresh_token": refresh_token or ""
-            })
+            page.goto(url_input, wait_until="domcontentloaded", timeout=12000)
+            page.wait_for_timeout(1200)
 
-            # 2) Actualizar password
-            supabase.auth.update_user({"password": new_pass})
+            # ==========================================
+            # 1️⃣ Intentar JSON-LD (schema.org Product)
+            # ==========================================
+            scripts = page.locator("script[type='application/ld+json']").all()
 
-            st.success("✅ Contraseña actualizada. Ya podés iniciar sesión.")
-            st.stop()
+            for s in scripts[:50]:
+                try:
+                    content = s.inner_text(timeout=1000)
+                    data = json.loads(content)
 
-        except Exception as e:
-            st.error(f"Error actualizando contraseña: {e}")
-            st.stop()
+                    if isinstance(data, dict):
+                        data = [data]
 
-# --- LÓGICA DE ACCESO ---
-if "user_logged" not in st.session_state:
-    logo_b64 = get_base64_logo("assets/img/logo_clean.png")
-    st.markdown(
-    f"""
-    <div class="logo-wrap">
-      <div class="logo-bg">
-        <img src="data:image/png;base64,{logo_b64}" class="logo-img">
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-    
-    _, col_main, _ = st.columns([1, 2, 1])
-    # --- LOGIN / REGISTER ---
-    t1, t2 = st.tabs(["🔑 Iniciar Sesión", "🐺 Unirse a la Jauría"])
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
 
-    with t1:
-        _, col_main, _ = st.columns([1, 2, 1])
-        with col_main:
+                        if item.get("@type") in ["Product", "Offer"]:
+                            titulo = item.get("name")
+                            offer = item.get("offers", {})
+                            precio = None
 
-            u = st.text_input("Usuario o Email", key="l_u")
-            p = st.text_input("Contraseña", type="password", key="l_p")
+                            if isinstance(offer, dict):
+                                precio = offer.get("price")
 
-            # LOGIN
-            if st.button("Entrar", use_container_width=True, type="primary", key="l_submit"):
-                user, err = supa_login(u, p)
+                            if titulo and precio:
+                                try:
+                                    precio_i = int(float(precio))
+                                except Exception:
+                                    continue
 
-                if user:
-                    st.session_state["user_logged"] = user
-                    st.rerun()
-                else:
-                    st.error(f"❌ {err}")
+                                if precio_i <= int(max_price):
+                                    presas.append({
+                                        "titulo": str(titulo)[:120],
+                                        "precio": precio_i,
+                                        "link": url_input
+                                    })
 
-            # RESET PASSWORD
-            if st.button("Olvidé mi contraseña", use_container_width=True, key="l_reset"):
-                if "@" in u:
-                    ok = supa_reset_password(u)
-                    if ok:
-                        st.success("📩 Te enviamos un email para restablecer la contraseña.")
-                    else:
-                        st.error("No se pudo enviar el email.")
-                else:
-                    st.warning("Ingresá tu EMAIL arriba para restablecer la contraseña.")
-    with t2:
-        if "plan_elegido" not in st.session_state:
-            # 🔥 Solo en la vista de planes: más ancho para que entren 3 cards
-            st.markdown("""
-            <style>
-            .block-container{
-                max-width: 1100px !important;
-            }
-            </style>
-            """, unsafe_allow_html=True)
+                except Exception:
+                    continue
 
-            st.subheader("Elegí tu rango en la manada")
-            c1, c2, c3 = st.columns(3, gap="large")
+            if presas:
+                return presas[:40]
 
-            with c1:
-                st.markdown("""<div class="plan-card">
-                    <h3 class="plan-title">Omega 🐾</h3>
-                    <p class="plan-price">$5 / mes</p>
-                    <ul class="plan-features">
-                        <li>✅ 2 búsquedas activas</li>
-                        <li>✅ Alertas por precio piso</li>
-                        <li>✅ Notificaciones básicas</li>
-                    </ul></div>""", unsafe_allow_html=True)
-                if st.button("Elegir Omega", use_container_width=True):
-                    st.session_state["plan_elegido"] = "omega"
-                    st.rerun()
+            # ==========================================
+            # 2️⃣ Fallback Magento (Tripstore suele ser Magento)
+            #    - li.product-item
+            #    - title: a.product-item-link
+            #    - price: [data-price-amount] o span.price
+            # ==========================================
+            magento_cards = page.locator("li.product-item").all()
 
-            with c2:
-                st.markdown("""<div class="plan-card" style="border-color: #4da3ff;">
-                    <h3 class="plan-title">Beta 🐺</h3>
-                    <p class="plan-price">$10 / mes</p>
-                    <ul class="plan-features">
-                        <li>✅ 5 búsquedas activas</li>
-                        <li>✅ Alertas precio y %</li>
-                        <li>✅ Email y WhatsApp</li>
-                        <li>✅ Historial de cazas</li>
-                    </ul></div>""", unsafe_allow_html=True)
-                if st.button("Elegir Beta", use_container_width=True):
-                    st.session_state["plan_elegido"] = "beta"
-                    st.rerun()
+            for card in magento_cards[:60]:
+                try:
+                    title_el = card.locator("a.product-item-link").first
+                    if not title_el:
+                        continue
 
-            with c3:
-                st.markdown("""<div class="plan-card" style="background: rgba(77, 163, 255, 0.1);">
-                    <h3 class="plan-title">Alfa 👑</h3>
-                    <p class="plan-price">$15 / mes</p>
-                    <ul class="plan-features">
-                        <li>✅ 10 búsquedas activas</li>
-                        <li>✅ Errores de tarifa</li>
-                        <li>✅ Tiempo real 24/7</li>
-                        <li>✅ Comparador dinámico</li>
-                    </ul></div>""", unsafe_allow_html=True)
-                if st.button("Elegir Alfa", use_container_width=True):
-                    st.session_state["plan_elegido"] = "alfa"
-                    st.rerun()
+                    try:
+                        titulo = (title_el.inner_text(timeout=1000) or "").strip()
+                    except Exception:
+                        continue
 
-        else:
-            # Registro (angosto)
-            _, col_main, _ = st.columns([1, 2, 1])
-            with col_main:
-                st.info(f"Registrando nuevo miembro · Rango {st.session_state['plan_elegido'].capitalize()}")
+                    if not titulo:
+                        continue
 
-                nu = st.text_input("Usuario", key="r_user")  # por ahora no se usa en Supabase Auth
-                em = st.text_input("Email", key="r_email")
-                np = st.text_input("Contraseña", type="password", key="r_pass")
+                    if keyword_l and keyword_l not in titulo.lower():
+                        continue
 
-            if st.button("Finalizar Registro", use_container_width=True, key="r_submit"):
+                    precio: int | None = None
 
-                user, err = supa_signup(
-                    em,
-                    np,
-                    nu,
-                    st.session_state["plan_elegido"]
-                )
+                    # 2.1) data-price-amount (muchas tiendas Magento)
+                    price_attr_el = card.locator("[data-price-amount]").first
+                    if price_attr_el:
+                        raw = (price_attr_el.get_attribute("data-price-amount") or "").strip()
+                        if raw:
+                            try:
+                                precio = int(float(raw))
+                            except Exception:
+                                precio = None
 
-                if user:
-                    st.success("✅ Cuenta creada. Revisá tu email para confirmar.")
-                else:
-                    st.error(f"❌ {err}")
+                    # 2.2) fallback: texto de span.price
+                    if not precio:
+                        price_el = card.locator("span.price").first
+                        if not price_el:
+                            continue
+                        try:
+                            precio_txt = (price_el.inner_text(timeout=1000) or "").strip()
+                        except Exception:
+                            continue
+                        precio = _to_int_price(precio_txt)
 
-# --- PANEL PRINCIPAL ---
-else:
-    user = st.session_state["user_logged"]
+                    if not precio:
+                        continue
 
-    email = (getattr(user, "email", None) or "").strip()
+                    if precio > int(max_price):
+                        continue
 
-    user_id = getattr(user, "id", None)
-    profile = get_user_profile(user_id)
+                    link = title_el.get_attribute("href")
+                    if link:
+                        link = urljoin(url_input, link)
 
-    plan_real = (profile.get("plan") or "omega").lower().strip()
-    role = (profile.get("role") or "user").lower().strip()
-    nick = (profile.get("username") or "").strip()
+                    presas.append({
+                        "titulo": titulo[:120],
+                        "precio": int(precio),
+                        "link": link or url_input
+                    })
 
-    display_name = nick if nick else (email.split("@")[0] if "@" in email else "usuario")
+                except Exception:
+                    continue
 
-    es_admin = (role == "admin")
+            if presas:
+                return presas[:40]
 
-    # ✅ Plan "vista" (por defecto, plan real)
-    plan_vista = plan_real
+            # ==========================================
+            # 3️⃣ Intentar por "product cards" genéricas
+            #    (WooCommerce / Shopify simples)
+            # ==========================================
+            cards = page.locator(
+                "div.product-card, "
+                "div.product-item-info, "
+                "div.product, "
+                "li.product"
+            ).all()
 
-    # --- SIDEBAR ---
-    with st.sidebar:
-        st.subheader("🧭 Sesión")
-        st.caption(f"Usuario: `{display_name}`")
-        st.caption(f"Plan real: **{plan_real.capitalize()}**")
+            for card in cards[:50]:
+                try:
+                    title_el = card.locator(
+                        "a.product-item-link, "
+                        "a.woocommerce-LoopProduct-link, "
+                        "a.product-name, "
+                        "a[href]"
+                    ).first
 
-        st.divider()
+                    if not title_el:
+                        continue
 
-        if es_admin:
-            st.subheader("🛠️ Panel de Admin")
+                    try:
+                        titulo = (title_el.inner_text(timeout=1000) or "").strip()
+                    except Exception:
+                        continue
 
-            # Botón refresh rápido (solo rerun)
-            if st.button("🔄 Refrescar panel", use_container_width=True):
-                st.rerun()
+                    if not titulo:
+                        continue
 
-            plan_simulado = st.radio(
-                "Simular vista de rango:",
-                ["Omega", "Beta", "Alfa"],
-                index=2 if plan_real == "alfa" else (1 if plan_real == "beta" else 0),
-                key="admin_plan_sim"
-            )
-            plan_vista = plan_simulado.lower()
-            st.info(f"Viendo como: {plan_simulado}")
+                    if keyword_l and keyword_l not in titulo.lower():
+                        continue
 
-            st.divider()
+                    price_el = card.locator(
+                        "span.price, "
+                        ".price, "
+                        ".product-price, "
+                        "[class*='price']"
+                    ).first
 
+                    if not price_el:
+                        continue
 
+                    # Evitar waits eternos: si no es visible, saltar
+                    try:
+                        if not price_el.is_visible():
+                            continue
+                    except Exception:
+                        continue
 
-# --------------------
-# 👥 Usuarios (top 30)
-# --------------------
-            st.divider()
-            st.subheader("👥 Usuarios (últimos 30)")
+                    try:
+                        precio_txt = (price_el.inner_text(timeout=1200) or "").strip()
+                    except Exception:
+                        continue
+
+                    if not precio_txt:
+                        continue
+
+                    precio = _to_int_price(precio_txt)
+                    if not precio:
+                        continue
+
+                    if precio > int(max_price):
+                        continue
+
+                    link = title_el.get_attribute("href")
+                    if link:
+                        link = urljoin(url_input, link)
+
+                    presas.append({
+                        "titulo": titulo[:120],
+                        "precio": int(precio),
+                        "link": link or url_input
+                    })
+
+                except Exception:
+                    continue
+
+            if presas:
+                return presas[:40]
+
+            # ==========================================
+            # 4️⃣ Último fallback (links con precio en texto)
+            # ==========================================
+            links = page.locator("a").all()
+
+            for link_el in links[:200]:
+                try:
+                    try:
+                        texto = link_el.inner_text(timeout=600)
+                    except Exception:
+                        continue
+
+                    if not texto:
+                        continue
+
+                    if keyword_l and keyword_l not in texto.lower():
+                        continue
+
+                    precio = _to_int_price(texto)
+                    if not precio:
+                        continue
+
+                    if precio > int(max_price):
+                        continue
+
+                    href = link_el.get_attribute("href")
+                    if href:
+                        href = urljoin(url_input, href)
+
+                    titulo = texto.split("\n")[0].strip()
+
+                    presas.append({
+                        "titulo": titulo[:120],
+                        "precio": int(precio),
+                        "link": href or url_input
+                    })
+
+                except Exception:
+                    continue
+
+            return presas[:40]
+
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
 
             try:
-                from auth.supabase_client import supabase
-
-                res = (
-                    supabase
-                    .table("profiles")
-                    .select("user_id, username, email, plan, role, created_at")
-                    .order("created_at", desc=True)
-                    .limit(30)
-                    .execute()
-                )
-
-                rows = res.data or []
-
-                if not rows:
-                    st.caption("No hay usuarios.")
-                else:
-                    st.dataframe(
-                        rows,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "user_id": "ID",
-                            "username": "Nick",
-                            "email": "Email",
-                            "plan": "Plan",
-                            "role": "Rol",
-                            "created_at": "Creado"
-                        }
-                    )
-
-            except Exception as e:
-                st.error(f"Error cargando usuarios: {e}")
-
-    # ✅ IMPORTANTÍSIMO: de acá en adelante usá plan_vista para límites/UI
-    plan = plan_vista
-    user_id = getattr(user, "id", None)
-    # ✅carga las búsquedas
-    st.session_state.busquedas = obtener_cazas(user_id, plan)
-
-    st.title(f"Panel de {display_name} - Plan {plan.capitalize()} 🐺")
-    # --- Indicador de uso del plan ---
-    from auth.supabase_client import supabase
-
-    def contar_cazas_activas(user_id: str) -> int:
-        if not user_id:
-            return 0
-
-        try:
-            res = (
-                supabase
-                .table("cazas")
-                .select("id", count="exact")
-                .eq("user_id", user_id)
-                .eq("estado", "activa")
-                .execute()
-            )
-
-            return int(res.count or 0)
-
-        except Exception as e:
-            print("[contar_cazas_activas] error:", e)
-            return 0
-
-    limite_plan = PLAN_LIMITS.get(plan, 2)
-    cazas_activas = contar_cazas_activas(user_id)
-    restantes = limite_plan - cazas_activas
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.info(f"🐺 Estás usando {cazas_activas} de {limite_plan} cazas disponibles.")
-
-    with col2:
-        if restantes > 0:
-            st.success(f"🔓 Te quedan {restantes} disponibles.")
-        else:
-            st.warning("⚠️ Has alcanzado el límite de tu plan.")
-
-    # Configuración de límites
-    if plan == "alfa":
-        limit = 10
-        freq_options = ["15 min", "30 min", "45 min", "1 h"]
-    elif plan == "beta":
-        limit = 5
-        freq_options = ["30 min", "1 h", "1.5 h", "2 h", "2.5 h"]
-    else:
-        limit = 2
-        freq_options = ["1 h", "2 h", "3 h", "4 h"]
-
-    # --- Sección WhatsApp (Solo Alfa y Beta) ---
-    if plan in ["alfa", "beta"]:
-        with st.expander("📲 Sincronizar WhatsApp", expanded=not st.session_state.ws_vinculado):
-            if not st.session_state.ws_vinculado:
-                link_wa = "https://wa.me/5491100000000?text=Vincular%20Cuenta"
-                st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={link_wa}")
-                if st.button("Confirmar Vinculación ✅"):
-                    st.session_state.ws_vinculado = True
-                    st.rerun()
-            else:
-                st.success("✅ WhatsApp Activo")
-
-    # --- Lógica de Cacerías (Respetando el límite del plan) ---
-    total_ocupado = len(st.session_state.busquedas)
-    
-    if total_ocupado < limit:
-        with st.expander("➕ Configurar nueva cacería"):
-            n_url = st.text_input("URL")
-            n_key = st.text_input("Palabra clave")
-            
-            tipo_alerta = st.radio("Estrategia:", ["Precio Piso", "Descuento %"], horizontal=True)
-            
-            if tipo_alerta == "Precio Piso":
-                n_price = st.number_input(
-                    "Precio Máximo ($)",
-                    min_value=0,
-                    value=500000,
-                    step=1000,
-                    key="price_piso"
-                )
-                tipo_db = "piso"
-            else:
-                n_price = st.slider(
-                    "Porcentaje deseado (%)",
-                    5, 90, 35,
-                    key="price_desc"
-                )
-                tipo_db = "descuento"
-
-            # ⚠️ FRECUENCIA SIEMPRE DEFINIDA ANTES DEL BOTÓN
-            n_freq = st.selectbox("Frecuencia", freq_options)
-            # DEBUG UI + TERMINAL (activar con DEBUG=1)
-            if DEBUG:
-                debug_ui = f"DEBUG UI | tipo_db={tipo_db} | n_price={n_price} | type={type(n_price)}"
-                st.caption(debug_ui)
-               
-
-            if st.button("Lanzar"):
-                user_id = getattr(user, "id", None)
-
-                try:
-                    precio_max = int(float(n_price))
-                except Exception:
-                    precio_max = 0
-                if DEBUG:
-                    debug_lanzar = (
-                        f"DEBUG LANZAR | user_id={user_id} | tipo_db={tipo_db} | "
-                        f"precio_max={precio_max} | freq={n_freq} | plan={plan}"
-                    )
-                    st.info(debug_lanzar)
-               
-
-                if tipo_db == "piso" and precio_max <= 0:
-                    st.error("El precio máximo debe ser mayor a 0.")
-                    print("ABORT: precio_max inválido para piso")
-                    st.stop()
-
-                resultado = guardar_caza(
-                    user_id,
-                    n_key,
-                    n_url,
-                    precio_max,
-                    n_freq,
-                    tipo_db,
-                    plan
-                )
-
-                if resultado is True:
-                    st.success("Caza lanzada 🐺")
-                    st.rerun()
-                elif resultado == "limite":
-                    st.warning("⚠️ Alcanzaste el límite de tu plan.")
-                else:
-                    st.error("Error al guardar la caza.")
-    else:
-        st.warning(f"Has alcanzado el límite de {limit} búsquedas de tu plan {plan.capitalize()}.")
-
-    # --- LISTADO DE BÚSQUEDAS ACTIVAS ---
-    if st.session_state.busquedas:
-        st.subheader(f"Mis Cacerías ({plan.capitalize()} 🐺)")
-
-        for i, b in enumerate(st.session_state.busquedas):
-            with st.container(border=True):
-                col_info, col_btns = st.columns([3, 1])
-
-                with col_info:
-                    precio_meta = b.get("precio_max", 0)
-                    tipo = (b.get("tipo_alerta") or "piso").strip().lower()
-                    label_precio = f"Máx: ${int(precio_meta):,}" if tipo == "piso" else f"Objetivo: {precio_meta}% desc."
-
-                    kw = (
-                        b.get("keyword")
-                        or b.get("producto")
-                        or b.get("palabra_clave")
-                        or b.get("palabra clave")
-                        or ""
-                    )
-
-                    st.markdown(f"**🎯 {kw}** ({tipo.capitalize()})")
-                    url = (b.get("url") or b.get("link") or "")
-                    st.caption(f"📍 {url[:50]}...")
-                    st.write(f"💰 {label_precio} | ⏱️ {b.get('frecuencia','')}")
-
-                # ✅ OJO: col_btns va afuera de col_info
-                with col_btns:
-                    # 🐺 BOTÓN OLFATEAR
-                    if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
-                        with st.spinner("Rastreando..."):
-                            from scraper.scraper_pro import hunt_offers  # hoy solo ML
-
-                            kw2 = b.get("keyword") or b.get("producto") or ""
-                            url2 = b.get("url") or b.get("link") or ""
-                            precio2 = int(b.get("precio_max") or 0)
-
-                            # ✅ Router mínimo: no intentes ML si no es ML
-                            source = (b.get("source") or "").strip().lower()
-                            domain = _domain_from_url(url2)
-                            inferred = _infer_source_from_url(url2)
-
-                            domain = _domain_from_url(url2)
-                            if "mercadolibre" not in domain:
-                                st.warning(f"Fuente no soportada todavía (no ML): {domain}")
-                                st.session_state[f"last_res_{i}"] = []
-
-                                from urllib.parse import urlparse
-
-                                host = urlparse(str(url2)).netloc.lower().strip()
-                                if "mercadolibre" not in host:
-                                    st.warning(f"Fuente no soportada todavía (solo ML). URL: {url2}")
-                                    resultados = []
-                                else:
-                                    try:
-                                        resultados = hunt_offers(url2, kw2, precio2)
-                                    except Exception as e:
-                                        st.warning(f"Error al rastrear (ML): {e}")
-                                        resultados = []
-                                        
-                            # 1) si no hay source, usar lo inferido (o unsupported)
-                            if not source or source == "unknown":
-                                source = inferred if inferred != "unknown" else "unsupported"
-
-                            # 2) si el usuario/source no coincide con el dominio, priorizar dominio
-                            if inferred != "unknown" and inferred != source:
-                                source = inferred
-
-                            # 3) guardrail CLAVE: nunca correr scraper ML fuera de ML
-                            if source == "mercadolibre" and "mercadolibre" not in domain:
-                                source = inferred if inferred != "unknown" else "unsupported"
-
-                            if source != "mercadolibre":
-                                st.warning(f"Fuente no soportada todavía: {source} (URL: {url2})")
-                                st.session_state[f"last_res_{i}"] = []
-                            else:
-                                resultados = hunt_offers(url2, kw2, precio2)
-                                st.session_state[f"last_res_{i}"] = resultados or []
-                                if resultados:
-                                    st.session_state["play_sound"] = True
-
-                        st.rerun()
-
-                    # 🗑 BOTÓN ELIMINAR
-                    if st.button("🗑 Eliminar", key=f"del_{i}", use_container_width=True):
-                        from auth.supabase_client import supabase
-                        supabase.table("cazas").delete().eq("id", b["id"]).eq("user_id", user_id).execute()
-                        st.success("Caza eliminada 🐺")
-                        st.rerun()
-
-        # --- MOSTRAR RESULTADOS ---
-        res_key = f"last_res_{i}"
-        if res_key in st.session_state and st.session_state[res_key]:
-            ofertas = st.session_state[res_key]
-
-            for r in ofertas:
-                if isinstance(r, dict) and "titulo" in r:
-                    precio_item = int(str(r.get("precio", 0)).replace(".", ""))
-                    precio_objetivo = int(b.get("precio_max", 0) or 0)
-                    tipo_alerta_row = (b.get("tipo_alerta") or "piso").strip().lower()
-
-                    pasa = (precio_item <= precio_objetivo) if tipo_alerta_row == "piso" else True
-
-                    if pasa:
-                        with st.expander(f"🍖 {r.get('titulo','')} - ${precio_item:,}", expanded=True):
-                            st.markdown(f"[Ver oferta en la web]({r.get('link', '#')})")
-
-                            # WhatsApp (sin HTML, sin unsafe_allow_html)
-                            if plan in ["alfa", "beta"] and st.session_state.get("ws_vinculado"):
-                                titulo = r.get("titulo", "")
-                                link_oferta = r.get("link", "")
-                                msg = (
-                                    "🐺 PRESA!\n"
-                                    f"Producto: {titulo}\n"
-                                    f"Precio: ${precio_item}\n"
-                                    f"Link: {link_oferta}"
-                                )
-                                wa_url = f"https://wa.me/?text={quote(msg)}"
-
-                                # botón si existe tu versión, si no link normal
-                                try:
-                                    st.link_button("📲 Avisar por WhatsApp", wa_url, use_container_width=True)
-                                except Exception:
-                                    st.markdown(f"[📲 Avisar por WhatsApp]({wa_url})")
-                    else:
-                        st.warning("Se detectó una oferta pero el formato es incompatible.")
- 
+                browser.close()
+            except Exception:
+                pass
