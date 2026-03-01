@@ -640,7 +640,7 @@ else:
             if DEBUG:
                 debug_ui = f"DEBUG UI | tipo_db={tipo_db} | n_price={n_price} | type={type(n_price)}"
                 st.caption(debug_ui)
-                print(debug_ui)
+               
 
             if st.button("Lanzar"):
                 user_id = getattr(user, "id", None)
@@ -655,7 +655,7 @@ else:
                         f"precio_max={precio_max} | freq={n_freq} | plan={plan}"
                     )
                     st.info(debug_lanzar)
-                print(debug_lanzar)
+               
 
                 if tipo_db == "piso" and precio_max <= 0:
                     st.error("El precio máximo debe ser mayor a 0.")
