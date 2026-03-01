@@ -102,6 +102,7 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
             # Compatible con Magento / WooCommerce / Shopify
             # ==========================================
 
+
             cards = page.locator(
                 "li.product-item, "
                 "div.product-card, "
