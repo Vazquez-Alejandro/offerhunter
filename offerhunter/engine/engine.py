@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from scraper.generic import hunt_offers_generic
+
 from auth.supabase_client import supabase
 
 # Scraper actual (MercadoLibre)
@@ -132,28 +134,26 @@ def _safe_float(x, default=0.0) -> float:
 # =========================
 def _scrape_by_source(source: str, link: str, producto: str, precio_max: float, tipo_alerta: str):
     """
-    Devuelve lista de ofertas o lanza excepción controlada si no soportado.
-    Hoy solo soportamos MercadoLibre con hunt_offers_ml.
+    Devuelve lista de ofertas.
+    Si la tienda no está soportada aún, lanza excepción controlada.
     """
     source = (source or "").strip().lower()
     tipo_alerta = (tipo_alerta or "piso").strip().lower()
 
-    # Mapa de scrapers por source (sumás acá nuevas tiendas)
     SCRAPER_BY_SOURCE = {
         "mercadolibre": hunt_offers_ml,
+        "generic": hunt_offers_generic,
+        # Futuras tiendas:
         # "fravega": hunt_offers_fravega,
         # "garbarino": hunt_offers_garbarino,
-        # "tiendamia": hunt_offers_tiendamia,
-        # "temu": hunt_offers_temu,
-        # "tripstore": hunt_offers_tripstore,
+        # ...
     }
 
     fn = SCRAPER_BY_SOURCE.get(source)
-    if not fn:
-        raise ValueError(f"Fuente no soportada todavía: {source}")
 
-    # Firma actual: hunt_offers(link, producto, precio_max)
-    # Si en el futuro necesitás tipo_alerta, lo pasás cuando el scraper lo soporte.
+    if not fn:
+        raise ValueError("Tienda no soportada, estamos trabajando en ello.")
+
     return fn(link, producto, precio_max)
 
 
@@ -213,7 +213,7 @@ def vigilar_ofertas():
         inferred = _infer_source_from_url(link)
 
         # Si no pudimos inferir, marcamos como unsupported para evitar ejecutar ML por error
-        inferred_or_unsupported = inferred if inferred != "unknown" else "unsupported"
+        inferred_or_unsupported = inferred if inferred != "unknown" else "generic"
 
         # 1) Si source viene vacío/unknown -> usar inferred (o unsupported)
         if not source or source == "unknown":
