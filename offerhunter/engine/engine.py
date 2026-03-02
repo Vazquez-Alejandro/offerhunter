@@ -213,8 +213,10 @@ def vigilar_ofertas():
         mins = _freq_to_minutes(frecuencia)
         mins = _clamp_minutes_by_plan(plan, mins)
 
+        force_run = os.getenv("FORCE_RUN", "0") == "1"
+
         last_dt = _parse_dt_utc(last_check)
-        if last_dt and (now - last_dt) < timedelta(minutes=mins):
+        if (not force_run) and last_dt and (now - last_dt) < timedelta(minutes=mins):
             continue
 
         domain = _domain_from_url(link)
