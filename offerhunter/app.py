@@ -150,7 +150,7 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
 
                     # 2.2) fallback: texto de span.price
                     if not precio:
-                        price_el = card.locator("span.price:visible").first
+                        price_el = card.locator("span.price").first
                         if not price_el:
                             continue
                         try:
@@ -216,10 +216,10 @@ def hunt_offers_generic(url_input: str, keyword: str, max_price: int):
                         continue
 
                     price_el = card.locator(
-                        "span.price:visible, "
-                        ".price:visible, "
-                        ".product-price:visible, "
-                        "[class*='price:visible']"
+                        "span.price, "
+                        ".price, "
+                        ".product-price, "
+                        "[class*='price']"
                     ).first
 
                     if not price_el:
