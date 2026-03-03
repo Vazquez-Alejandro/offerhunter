@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import base64
 import requests
 from bs4 import BeautifulSoup
@@ -760,12 +761,26 @@ else:
                 # RESULTADOS (debajo de columnas, full width)
                 # -------------------------
                 res = st.session_state.get(f"last_res_{rid}", [])
+                # Dedup results by link/title to avoid repeated cards
+                if res:
+                    seen = set()
+                    uniq = []
+                    for item in res:
+                        key = (str(item.get('link') or ''), str(item.get('titulo') or ''), str(item.get('precio') or ''))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        uniq.append(item)
+                    res = uniq
                 if res:
                     with st.expander(f"✅ Resultados ({len(res)})", expanded=True):
                         for r in res[:10]:
                             c1, c2 = st.columns([3, 1])
                             with c1:
-                                st.write(r.get("titulo", ""))
+                                titulo = " ".join(str(r.get('titulo','')).split())
+                                if len(titulo) > 90:
+                                    titulo = titulo[:87] + "…"
+                                st.write(titulo)
                                 try:
                                     st.caption(f"${int(r.get('precio', 0)):,}".replace(",", "."))
                                 except Exception:
@@ -776,7 +791,18 @@ else:
     # --- SONIDO (al final para que suene en el mismo click) ---
     if st.session_state.get("play_sound"):
         try:
-            st.audio(WOLF_PATH, autoplay=True)
+            # Render hidden autoplay audio (no controls bar)
+            with open(WOLF_PATH, "rb") as f:
+                audio_bytes = f.read()
+            b64 = base64.b64encode(audio_bytes).decode()
+            components.html(
+                f"""
+                <audio autoplay style='display:none;'>
+                  <source src='data:audio/mp3;base64,{b64}' type='audio/mp3'>
+                </audio>
+                """,
+                height=0,
+            )
         except Exception:
             # fallback silencioso
             pass
