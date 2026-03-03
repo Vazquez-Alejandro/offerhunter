@@ -71,25 +71,6 @@ def get_user_profile(user_id: str):
     return rows[0] if rows else {}
 
 
-if "play_sound" not in st.session_state:
-    st.session_state["play_sound"] = False
-
-if st.session_state.get("play_sound"):
-    with open(WOLF_PATH, "rb") as f:
-        audio_bytes = f.read()
-        b64 = base64.b64encode(audio_bytes).decode()
-
-    st.markdown(
-        f"""
-        <audio autoplay style="display:none;">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.session_state["play_sound"] = False
-
 
 
 from auth.supabase_client import supabase
@@ -353,7 +334,7 @@ if "user_logged" not in st.session_state:
             p = st.text_input("Contraseña", type="password", key="l_p")
 
             # LOGIN
-            if st.button("Entrar", use_container_width=True, type="primary", key="l_submit"):
+            if st.button("Entrar", width='stretch', type="primary", key="l_submit"):
                 user, err = supa_login(u, p)
 
                 if user:
@@ -363,7 +344,7 @@ if "user_logged" not in st.session_state:
                     st.error(f"❌ {err}")
 
             # RESET PASSWORD
-            if st.button("Olvidé mi contraseña", use_container_width=True, key="l_reset"):
+            if st.button("Olvidé mi contraseña", width='stretch', key="l_reset"):
                 if "@" in u:
                     ok = supa_reset_password(u)
                     if ok:
@@ -395,7 +376,7 @@ if "user_logged" not in st.session_state:
                         <li>✅ Alertas por precio piso</li>
                         <li>✅ Notificaciones básicas</li>
                     </ul></div>""", unsafe_allow_html=True)
-                if st.button("Elegir Omega", use_container_width=True):
+                if st.button("Elegir Omega", width='stretch'):
                     st.session_state["plan_elegido"] = "omega"
                     st.rerun()
 
@@ -409,7 +390,7 @@ if "user_logged" not in st.session_state:
                         <li>✅ Email y WhatsApp</li>
                         <li>✅ Historial de cazas</li>
                     </ul></div>""", unsafe_allow_html=True)
-                if st.button("Elegir Beta", use_container_width=True):
+                if st.button("Elegir Beta", width='stretch'):
                     st.session_state["plan_elegido"] = "beta"
                     st.rerun()
 
@@ -423,7 +404,7 @@ if "user_logged" not in st.session_state:
                         <li>✅ Tiempo real 24/7</li>
                         <li>✅ Comparador dinámico</li>
                     </ul></div>""", unsafe_allow_html=True)
-                if st.button("Elegir Alfa", use_container_width=True):
+                if st.button("Elegir Alfa", width='stretch'):
                     st.session_state["plan_elegido"] = "alfa"
                     st.rerun()
 
@@ -437,7 +418,7 @@ if "user_logged" not in st.session_state:
                 em = st.text_input("Email", key="r_email")
                 np = st.text_input("Contraseña", type="password", key="r_pass")
 
-            if st.button("Finalizar Registro", use_container_width=True, key="r_submit"):
+            if st.button("Finalizar Registro", width='stretch', key="r_submit"):
 
                 user, err = supa_signup(
                     em,
@@ -483,7 +464,7 @@ else:
             st.subheader("🛠️ Panel de Admin")
 
             # Botón refresh rápido (solo rerun)
-            if st.button("🔄 Refrescar panel", use_container_width=True):
+            if st.button("🔄 Refrescar panel", width='stretch'):
                 st.rerun()
 
             plan_simulado = st.radio(
@@ -524,7 +505,7 @@ else:
                 else:
                     st.dataframe(
                         rows,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                         column_config={
                             "user_id": "ID",
@@ -683,17 +664,35 @@ else:
         st.warning(f"Has alcanzado el límite de {limit} búsquedas de tu plan {plan.capitalize()}.")
 
     # --- LISTADO DE BÚSQUEDAS ACTIVAS ---
+    status_slot = st.empty()
+
+    # Mensaje de la última búsqueda (persistente entre reruns)
+    last = st.session_state.get("last_updated_rid")
+    if last is not None:
+        n = len(st.session_state.get(f"last_res_{last}", []))
+        status_slot.success(f"✅ Última búsqueda: {n} resultados")
+        st.session_state["last_updated_rid"] = None
+
     if st.session_state.busquedas:
         st.subheader(f"Mis Cacerías ({plan.capitalize()} 🐺)")
 
         for i, b in enumerate(st.session_state.busquedas):
+            rid = b.get("id", i)
+
             with st.container(border=True):
                 col_info, col_btns = st.columns([3, 1])
 
+                # -------------------------
+                # IZQUIERDA: info
+                # -------------------------
                 with col_info:
                     precio_meta = b.get("precio_max", 0)
                     tipo = (b.get("tipo_alerta") or "piso").strip().lower()
-                    label_precio = f"Máx: ${int(precio_meta):,}" if tipo == "piso" else f"Objetivo: {precio_meta}% desc."
+                    label_precio = (
+                        f"Máx: ${int(precio_meta):,}"
+                        if tipo == "piso"
+                        else f"Objetivo: {precio_meta}% desc."
+                    )
 
                     kw = (
                         b.get("keyword")
@@ -705,107 +704,84 @@ else:
 
                     st.markdown(f"**🎯 {kw}** ({tipo.capitalize()})")
                     url = (b.get("url") or b.get("link") or "")
-                    st.caption(f"📍 {url[:50]}...")
+                    st.caption(f"📍 {url}")
                     st.write(f"💰 {label_precio} | ⏱️ {b.get('frecuencia','')}")
 
-                # ✅ OJO: col_btns va afuera de col_info
+                # -------------------------
+                # DERECHA: botones (solo botones)
+                # -------------------------
                 with col_btns:
-                    # 🐺 BOTÓN OLFATEAR
-                    if st.button("Olfatear 🐺", key=f"olf_{i}", use_container_width=True):
+                    if st.button("Olfatear 🐺", key=f"olf_{rid}", width="stretch"):
                         with st.spinner("Rastreando..."):
-                            from scraper.scraper_pro import hunt_offers  # hoy solo ML
-
                             kw2 = b.get("keyword") or b.get("producto") or ""
                             url2 = b.get("url") or b.get("link") or ""
                             precio2 = int(b.get("precio_max") or 0)
 
-                            # ✅ Router mínimo: no intentes ML si no es ML
-                            source = (b.get("source") or "").strip().lower()
-                            domain = _domain_from_url(url2)
-                            inferred = _infer_source_from_url(url2)
-
-                            domain = _domain_from_url(url2)
-                            if "mercadolibre" not in domain:
-                                st.warning(f"Fuente no soportada todavía (no ML): {domain}")
-                                st.session_state[f"last_res_{i}"] = []
-
+                            try:
                                 from urllib.parse import urlparse
-
                                 host = urlparse(str(url2)).netloc.lower().strip()
-                                if "mercadolibre" not in host:
-                                    st.warning(f"Fuente no soportada todavía (solo ML). URL: {url2}")
-                                    resultados = []
+
+                                if "mercadolibre" in host:
+                                    from scraper.scraper_pro import hunt_offers as hunt_offers_ml
+                                    resultados = hunt_offers_ml(url2, kw2, precio2)
                                 else:
-                                    try:
-                                        resultados = hunt_offers(url2, kw2, precio2)
-                                    except Exception as e:
-                                        st.warning(f"Error al rastrear (ML): {e}")
-                                        resultados = []
-                                        
-                            # 1) si no hay source, usar lo inferido (o unsupported)
-                            if not source or source == "unknown":
-                                source = inferred if inferred != "unknown" else "unsupported"
+                                    from scraper.generic import hunt_offers_generic
+                                    resultados = hunt_offers_generic(url2, kw2, precio2)
 
-                            # 2) si el usuario/source no coincide con el dominio, priorizar dominio
-                            if inferred != "unknown" and inferred != source:
-                                source = inferred
+                            except Exception as e:
+                                st.warning(f"Error al rastrear: {e}")
+                                resultados = []
 
-                            # 3) guardrail CLAVE: nunca correr scraper ML fuera de ML
-                            if source == "mercadolibre" and "mercadolibre" not in domain:
-                                source = inferred if inferred != "unknown" else "unsupported"
+                            st.session_state[f"last_res_{rid}"] = resultados or []
+                            st.session_state["last_updated_rid"] = rid
 
-                            if source != "mercadolibre":
-                                st.warning(f"Fuente no soportada todavía: {source} (URL: {url2})")
-                                st.session_state[f"last_res_{i}"] = []
-                            else:
-                                resultados = hunt_offers(url2, kw2, precio2)
-                                st.session_state[f"last_res_{i}"] = resultados or []
-                                if resultados:
-                                    st.session_state["play_sound"] = True
+                            # Feedback inmediato (sin toast ni rerun)
+                            status_slot.success(f"✅ Última búsqueda: {len(resultados)} resultados")
 
-                        st.rerun()
+                            if resultados:
+                                st.session_state["play_sound"] = True
 
-                    # 🗑 BOTÓN ELIMINAR
-                    if st.button("🗑 Eliminar", key=f"del_{i}", use_container_width=True):
-                        from auth.supabase_client import supabase
-                        supabase.table("cazas").delete().eq("id", b["id"]).eq("user_id", user_id).execute()
-                        st.success("Caza eliminada 🐺")
-                        st.rerun()
+                    if st.button("🗑 Eliminar", key=f"del_{rid}", width="stretch"):
+                        try:
+                            from auth.supabase_client import supabase
+                            supabase.table("cazas").delete().eq("id", b["id"]).eq("user_id", user_id).execute()
+                        except Exception as e:
+                            st.error(f"Error eliminando caza: {e}")
+                        else:
+                            # Refresco local sin st.rerun (evita crashes de DOM)
+                            st.session_state.busquedas = [
+                                x for x in st.session_state.busquedas
+                                if str(x.get("id")) != str(b.get("id"))
+                            ]
+                            st.session_state.pop(f"last_res_{rid}", None)
+                            status_slot.info("🗑 Caza eliminada")
 
-        # --- MOSTRAR RESULTADOS ---
-        res_key = f"last_res_{i}"
-        if res_key in st.session_state and st.session_state[res_key]:
-            ofertas = st.session_state[res_key]
-
-            for r in ofertas:
-                if isinstance(r, dict) and "titulo" in r:
-                    precio_item = int(str(r.get("precio", 0)).replace(".", ""))
-                    precio_objetivo = int(b.get("precio_max", 0) or 0)
-                    tipo_alerta_row = (b.get("tipo_alerta") or "piso").strip().lower()
-
-                    pasa = (precio_item <= precio_objetivo) if tipo_alerta_row == "piso" else True
-
-                    if pasa:
-                        with st.expander(f"🍖 {r.get('titulo','')} - ${precio_item:,}", expanded=True):
-                            st.markdown(f"[Ver oferta en la web]({r.get('link', '#')})")
-
-                            # WhatsApp (sin HTML, sin unsafe_allow_html)
-                            if plan in ["alfa", "beta"] and st.session_state.get("ws_vinculado"):
-                                titulo = r.get("titulo", "")
-                                link_oferta = r.get("link", "")
-                                msg = (
-                                    "🐺 PRESA!\n"
-                                    f"Producto: {titulo}\n"
-                                    f"Precio: ${precio_item}\n"
-                                    f"Link: {link_oferta}"
-                                )
-                                wa_url = f"https://wa.me/?text={quote(msg)}"
-
-                                # botón si existe tu versión, si no link normal
+                # -------------------------
+                # RESULTADOS (debajo de columnas, full width)
+                # -------------------------
+                res = st.session_state.get(f"last_res_{rid}", [])
+                if res:
+                    with st.expander(f"✅ Resultados ({len(res)})", expanded=True):
+                        for r in res[:10]:
+                            c1, c2 = st.columns([3, 1])
+                            with c1:
+                                st.write(r.get("titulo", ""))
                                 try:
-                                    st.link_button("📲 Avisar por WhatsApp", wa_url, use_container_width=True)
+                                    st.caption(f"${int(r.get('precio', 0)):,}".replace(",", "."))
                                 except Exception:
-                                    st.markdown(f"[📲 Avisar por WhatsApp]({wa_url})")
-                    else:
-                        st.warning("Se detectó una oferta pero el formato es incompatible.")
- 
+                                    st.caption(f"${r.get('precio','')}")
+                            with c2:
+                                st.link_button("Ver", r.get("link", "#"), width="stretch")
+
+    # --- SONIDO (al final para que suene en el mismo click) ---
+    if st.session_state.get("play_sound"):
+        try:
+            st.audio(WOLF_PATH, autoplay=True)
+        except Exception:
+            # fallback silencioso
+            pass
+        st.session_state["play_sound"] = False
+
+    # Si no hay cacerías, mostrar mensaje
+    if not st.session_state.busquedas:
+        st.info("Todavía no tenés cacerías activas. Cargá una arriba y apretá 'Lanzar'.")
