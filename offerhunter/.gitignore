@@ -1,29 +1,53 @@
-limpiar_logo.py
-
-# Entorno virtual
-.venv/
-venv/
-
-# Variables de entorno
-.env
-
-# Base de datos local (SQLite)
+cat > .gitignore <<'EOF'
+# Databases
 *.db
 
-# Archivos de Python
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Archivos del sistema
-.DS_Store
+# Virtual envs
+.venv/
+venv/
+ENV/
+offerhunter/venv_bots/
 
-# Perfiles / caches de navegador (Playwright/Chromium/Firefox)
+# Streamlit
+.streamlit/
+offerhunter/.streamlit/
+
+# Browser profiles / caches (Playwright)
 offerhunter/bot_profile/
 offerhunter/chrome_profile/
 offerhunter/ff_profile/
 
-# Entornos virtuales locales
-offerhunter/venv_bots/
+# Sessions / secrets
+offerhunter/sessions/*.json
+
+# Logs
+*.log
+
+# VSCode
+.vscode/
+EOF
+
+printf "\n# Archives / multipart zips\n*.zip\n*.z[0-9][0-9]\n" >> .gitignore
+# Archives / multipart zips
+*.zip
+*.z[0-9][0-9]
+
+# Env / secrets
+.env
+*.env
+
+# Browser profiles / caches
+bot_profile/
+chrome_profile/
+ff_profile/
+
+# Local venv
+venv_bots/
 .venv/
 venv/
 
@@ -33,9 +57,3 @@ __pycache__/
 
 # Streamlit cache
 .streamlit/cache/
-
-# Sesiones / estados de login
-offerhunter/sessions/*.json
-
-# Logs
-*.log

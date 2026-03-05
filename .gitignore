@@ -11,3 +11,7 @@ ENV/
 
 # Streamlit
 .streamlit/
+# Archives / multipart zips (repo root)
+OfferHunter_Proyecto.zip
+OfferHunter_Proyecto.z*
+*.z[0-9][0-9]
