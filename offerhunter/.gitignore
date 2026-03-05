@@ -16,3 +16,26 @@ __pycache__/
 
 # Archivos del sistema
 .DS_Store
+
+# Perfiles / caches de navegador (Playwright/Chromium/Firefox)
+offerhunter/bot_profile/
+offerhunter/chrome_profile/
+offerhunter/ff_profile/
+
+# Entornos virtuales locales
+offerhunter/venv_bots/
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Streamlit cache
+.streamlit/cache/
+
+# Sesiones / estados de login
+offerhunter/sessions/*.json
+
+# Logs
+*.log
