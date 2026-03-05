@@ -59,7 +59,9 @@ def _infer_source_from_url(url: str) -> str:
 
 # ✅ Admin por email (seguro)
 
-def get_user_profile(user_id: str):
+def get_user_profile(user_id: str | None):
+    if not user_id:
+        return {}
     res = (
         supabase
         .table("profiles")
@@ -159,7 +161,7 @@ def get_base64_logo(path):
         return ""
     
 # CSS extra SOLO para pantalla de login/registro
-if "user_logged" not in st.session_state:
+if not st.session_state.get("user_logged"):
     st.markdown("""
     <style>
       .block-container{
@@ -440,6 +442,10 @@ else:
     email = (getattr(user, "email", None) or "").strip()
 
     user_id = getattr(user, "id", None)
+    if not user_id:
+        st.session_state.pop("user_logged", None)
+        st.warning("⚠ Tu sesión no es válida. Volvé a iniciar sesión.")
+        st.rerun()
     profile = get_user_profile(user_id)
 
     plan_real = (profile.get("plan") or "omega").lower().strip()
@@ -455,6 +461,35 @@ else:
 
     # --- SIDEBAR ---
     with st.sidebar:
+
+        st.markdown("### 🧰 Utilidades")
+        # Sonido del lobo (preferencia)
+        if "sound_enabled" not in st.session_state:
+            st.session_state["sound_enabled"] = True
+        st.session_state["sound_enabled"] = st.checkbox("🔊 Sonido del lobo", value=st.session_state["sound_enabled"])
+
+        # Conectar MercadoLibre (captcha/login) - guarda sessions/ml_state.json
+        if st.button("🔑 Conectar MercadoLibre (resolver captcha/login)"):
+            try:
+                # Ejecuta el script y muestra output
+                proc = subprocess.run(
+                    [sys.executable, "scripts/ml_connect.py"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    st.success("✅ Sesión de MercadoLibre guardada/actualizada.")
+                else:
+                    st.error("❌ No se pudo guardar la sesión de MercadoLibre.")
+                if (proc.stdout or "").strip():
+                    st.code(proc.stdout.strip())
+                if (proc.stderr or "").strip():
+                    st.code(proc.stderr.strip())
+            except Exception as e:
+                st.error(f"Error ejecutando ml_connect.py: {e}")
+
+        st.divider()
         st.subheader("🧭 Sesión")
         st.caption(f"Usuario: `{display_name}`")
         st.caption(f"Plan real: **{plan_real.capitalize()}**")
@@ -740,7 +775,7 @@ else:
                             status_slot.success(f"✅ Última búsqueda: {len(resultados)} resultados")
 
                             if resultados:
-                                st.session_state["play_sound"] = True
+                                st.session_state["sound_tick"] = int(st.session_state.get("sound_tick", 0)) + 1
 
                     if st.button("🗑 Eliminar", key=f"del_{rid}", width="stretch"):
                         try:

@@ -1,456 +1,359 @@
+# -*- coding: utf-8 -*-
+"""
+OfferHunter - Generic scraper
+
+Estrategia:
+- Carrefour (carrefour.com.ar): usar API VTEX (JSON) porque el DOM puede venir vacío
+  (tu log ya mostró total anchors = 0).
+- Otros sitios: Playwright + scroll + extracción DOM (fallback).
+
+Env vars:
+- OH_SCRAPER_DEBUG=1  -> imprime logs [generic]
+- OH_HEADLESS=0       -> abre navegador visible (para debug)
+"""
+
 from __future__ import annotations
 
-import json
+import os
 import re
+import time
+import unicodedata
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
-from playwright.sync_api import sync_playwright
+import requests
+
+DEBUG = os.getenv("OH_SCRAPER_DEBUG", "0") == "1"
+HEADLESS = os.getenv("OH_HEADLESS", "1") != "0"
 
 
-# =========================
-# HELPERS
-# =========================
+def _log(*args):
+    if DEBUG:
+        print("[generic]", *args)
 
-def _to_int_price(text: str) -> int | None:
-    if not text:
-        return None
-    m = re.search(r"([\d\.\,]+)", text)
-    if not m:
-        return None
-    raw = m.group(1).replace(".", "").replace(",", "")
+
+def _ensure_int(x: Any, default: int = 0) -> int:
     try:
-        return int(raw)
+        return int(float(x))
+    except Exception:
+        return default
+
+
+def _norm(s: str) -> str:
+    s = (s or "").lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _kw_match(title: str, keyword: str) -> bool:
+    k = _norm(keyword)
+    if not k:
+        return True
+    t = _norm(title)
+    tokens = [x for x in k.split() if x]
+    return all(tok in t for tok in tokens)
+
+
+def _parse_price_ar(raw: Any) -> Optional[int]:
+    """
+    Convierte:
+      "$ 5.639,00" -> 5639
+      "18.000"     -> 18000
+      5639.0       -> 5639
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            return int(raw)
+        except Exception:
+            return None
+
+    s = str(raw).strip()
+    if not s:
+        return None
+
+    s = s.replace("$", "").replace(" ", "")
+    s = re.sub(r"[^0-9\.,]", "", s)
+
+    # "5.639,00" -> "5.639" -> "5639"
+    if "," in s:
+        s = s.split(",")[0]
+    s = s.replace(".", "")
+
+    if not s.isdigit():
+        return None
+    try:
+        return int(s)
     except Exception:
         return None
 
 
-def _looks_like_facet_link(url: str) -> bool:
-    u = (url or "").lower()
-    bad_tokens = [
-        "/marca-",
-        "/disciplina-",
-        "/price-",
-        "/genero-",
-        "/género-",
-        "/talle-",
-        "/color-",
-        "/size-",
-        "/filter-",
-        "/filtro-",
-        "limit=",
-        "p=",
-    ]
-    return any(t in u for t in bad_tokens)
+# ----------------------------
+# Carrefour: VTEX API strategy
+# ----------------------------
+
+def _carrefour_category_path(u: str) -> str:
+    """
+    Toma una URL como:
+      https://www.carrefour.com.ar/Bebidas/Fernet-y-aperitivos/Fernet?order=
+    y devuelve:
+      /Bebidas/Fernet-y-aperitivos/Fernet
+    """
+    p = urlparse(u)
+    path = p.path.strip("/")
+    return "/" + path if path else "/"
 
 
-def _looks_like_item_count_text(text: str) -> bool:
-    t = (text or "").lower().strip()
-    return "artículo" in t or "articulos" in t or "artículos" in t
+def _carrefour_api_search(category_url: str, keyword: str, max_price: int, limit: int = 80) -> List[Dict[str, Any]]:
+    """
+    Busca productos en Carrefour usando la API pública de VTEX:
+      https://www.carrefour.com.ar/api/catalog_system/pub/products/search/<categoryPath>?_from=0&_to=49
 
+    Devuelve items:
+      {title, price, url, source}
+    """
+    base = "https://www.carrefour.com.ar"
+    path = _carrefour_category_path(category_url)
+    api = base + "/api/catalog_system/pub/products/search" + path
 
-def _looks_like_promo_text(text: str) -> bool:
-    t = (text or "").lower()
-    promo_tokens = [
-        "%", "cuota", "cuotas", "sin interés", "sin interes",
-        "descuento", "promo", "promoción", "promocion",
-        "mi carrefour", "crédito", "credito", "cuenta digital",
-        "precio por unidad", "precioporunidad",
-        "llevá", "lleva", "pagando con", "tope", "super",
-    ]
-    return any(tok in t for tok in promo_tokens)
+    headers = {
+        "user-agent": "Mozilla/5.0",
+        "accept": "application/json,text/plain,*/*",
+        "referer": base + "/",
+    }
 
-
-def _is_probably_price_text(text: str) -> bool:
-    if not text:
-        return False
-
-    t = text.strip()
-    tl = t.lower()
-
-    if _looks_like_promo_text(t):
-        return False
-
-    if ("$" not in t) and ("ars" not in tl):
-        return False
-
-    p = _to_int_price(t)
-    if not p:
-        return False
-
-    if p < 100:
-        return False
-
-    return True
-
-
-def _clean_title(text: str) -> str:
-    t = (text or "").strip()
-    t = re.sub(r"\s+", " ", t)
-    t = t.replace("\u00a0", " ").strip()
-    return t
-
-
-def _dedup_by_link(items: list[dict]) -> list[dict]:
+    out: List[Dict[str, Any]] = []
     seen = set()
-    out = []
-    for it in items:
-        link = (it.get("link") or "").strip()
-        if not link or link in seen:
-            continue
-        seen.add(link)
-        out.append(it)
+
+    batch = 50
+    kw = (keyword or "").strip()
+
+    _log("carrefour API:", api)
+    _log("keyword:", repr(kw), "max_price:", max_price)
+
+    # paginamos hasta alcanzar limit o hasta que VTEX devuelva vacío
+    for start in range(0, max(limit, batch), batch):
+        end = start + batch - 1
+        params = {"_from": start, "_to": end}
+
+        try:
+            r = requests.get(api, params=params, headers=headers, timeout=30)
+        except Exception as e:
+            _log("carrefour API error:", e)
+            break
+
+        if r.status_code != 200:
+            _log("carrefour API status:", r.status_code)
+            break
+
+        try:
+            data = r.json()
+        except Exception:
+            _log("carrefour API: json inválido")
+            break
+
+        if not isinstance(data, list) or not data:
+            _log("carrefour API: sin datos (fin paginado)")
+            break
+
+        for prod in data:
+            title = (prod.get("productName") or "").strip()
+            if not title:
+                continue
+
+            # keyword strict por tokens (sin acentos)
+            if kw and not _kw_match(title, kw):
+                continue
+
+            # link
+            link = prod.get("link") or ""
+            if link and link.startswith("/"):
+                link = base + link
+
+            # precio: items[0].sellers[0].commertialOffer.Price
+            price_raw = None
+            try:
+                price_raw = prod["items"][0]["sellers"][0]["commertialOffer"]["Price"]
+            except Exception:
+                price_raw = None
+
+            price = _parse_price_ar(price_raw)
+            if price is None:
+                continue
+
+            if max_price > 0 and price > max_price:
+                continue
+
+            key = link or title
+            if key in seen:
+                continue
+            seen.add(key)
+
+            out.append({"title": title, "price": price, "url": link, "source": "carrefour_api"})
+
+            if len(out) >= limit:
+                _log("carrefour API returned:", len(out))
+                return out
+
+    _log("carrefour API returned:", len(out))
     return out
 
 
-def _apply_keyword_soft(items: list[dict], keyword_l: str) -> list[dict]:
-    if not keyword_l:
-        return items
-    filtered = [x for x in items if keyword_l in (x.get("titulo", "") or "").lower()]
-    return filtered if filtered else items
+# ---------------------------------
+# Fallback genérico: Playwright DOM
+# ---------------------------------
 
-
-def _kick_lazy_load(page) -> None:
+def _playwright_available() -> bool:
     try:
-        page.wait_for_load_state("networkidle", timeout=12000)
+        import playwright  # noqa
+        return True
     except Exception:
-        pass
+        return False
 
-    for _ in range(7):
-        try:
-            page.mouse.wheel(0, 1800)
-        except Exception:
-            pass
-        try:
-            page.wait_for_timeout(650)
-        except Exception:
-            pass
 
+def _hunt_offers_playwright_dom(url: str, keyword: str, max_price: int, limit: int = 80) -> List[Dict[str, Any]]:
+    """
+    Fallback general para sitios que sí renderizan productos en DOM.
+    """
     try:
-        page.wait_for_selector(
-            "a[href*='/p/'], "
-            "div[class*='vtex-product-summary'], "
-            "div[class*='product-summary'], "
-            "div[class*='vtex-search-result'], "
-            "article",
-            timeout=12000
-        )
+        from playwright.sync_api import sync_playwright  # type: ignore
     except Exception:
-        pass
+        _log("Playwright no disponible.")
+        return []
 
-
-def _safe_get_attr(el, name: str, timeout_ms: int = 600) -> str:
-    try:
-        v = el.get_attribute(name, timeout=timeout_ms)
-        return (v or "").strip()
-    except Exception:
-        return ""
-
-
-def _safe_text(el, timeout_ms: int = 800) -> str:
-    try:
-        return _clean_title(el.text_content(timeout=timeout_ms) or "")
-    except Exception:
-        return ""
-
-
-# =========================
-# GENERIC SCRAPER
-# =========================
-
-def hunt_offers_generic(url_input: str, keyword: str, max_price: int, depth: int = 0):
-    keyword_l = (keyword or "").strip().lower()
-    presas: list[dict] = []
+    base = "{u.scheme}://{u.netloc}".format(u=urlparse(url))
+    seen = set()
+    out: List[Dict[str, Any]] = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-
+        browser = p.chromium.launch(headless=HEADLESS)
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
+            ),
+            viewport={"width": 1365, "height": 900},
+            locale="es-AR",
         )
-
         page = context.new_page()
-        page.set_default_timeout(3500)
-        page.set_default_navigation_timeout(25000)
+        page.set_default_timeout(60000)
 
+        page.goto(url, wait_until="domcontentloaded")
         try:
-            page.goto(url_input, wait_until="domcontentloaded", timeout=25000)
-            _kick_lazy_load(page)
+            page.wait_for_load_state("networkidle", timeout=45000)
+        except Exception:
+            pass
+        time.sleep(1.0)
 
-            # ==========================================
-            # 1) JSON-LD
-            # ==========================================
-            scripts = page.locator("script[type='application/ld+json']").all()
-            for s in scripts[:60]:
-                try:
-                    content = s.inner_text(timeout=1200)
-                    data = json.loads(content)
-                    if isinstance(data, dict):
-                        data = [data]
+        # Scroll para lazy-load
+        last_count = 0
+        stable = 0
+        for _ in range(12):
+            page.mouse.wheel(0, 2600)
+            time.sleep(1.0)
 
-                    for item in data:
-                        if not isinstance(item, dict):
-                            continue
-
-                        t = item.get("@type")
-                        if t not in ["Product", "Offer", "ItemList"]:
-                            continue
-
-                        if t in ["Product", "Offer"]:
-                            titulo = item.get("name")
-                            offer = item.get("offers", {})
-                            precio = None
-                            if isinstance(offer, dict):
-                                precio = offer.get("price")
-
-                            if titulo and precio:
-                                try:
-                                    precio_i = int(float(precio))
-                                except Exception:
-                                    continue
-
-                                if precio_i <= int(max_price):
-                                    presas.append({
-                                        "titulo": _clean_title(str(titulo))[:120],
-                                        "precio": precio_i,
-                                        "link": url_input
-                                    })
-
-                        if t == "ItemList":
-                            elems = item.get("itemListElement") or []
-                            if isinstance(elems, list):
-                                for el in elems[:80]:
-                                    try:
-                                        if not isinstance(el, dict):
-                                            continue
-                                        it = el.get("item") or el
-                                        if not isinstance(it, dict):
-                                            continue
-
-                                        titulo = it.get("name") or it.get("title")
-                                        urlp = it.get("url")
-                                        offers = it.get("offers") or {}
-                                        precio = None
-                                        if isinstance(offers, dict):
-                                            precio = offers.get("price")
-
-                                        if not titulo or not urlp or not precio:
-                                            continue
-
-                                        try:
-                                            precio_i = int(float(precio))
-                                        except Exception:
-                                            continue
-
-                                        if precio_i <= int(max_price):
-                                            presas.append({
-                                                "titulo": _clean_title(str(titulo))[:120],
-                                                "precio": precio_i,
-                                                "link": urljoin(url_input, str(urlp))
-                                            })
-                                    except Exception:
-                                        continue
-
-                except Exception:
-                    continue
-
-            if presas:
-                presas = _dedup_by_link(presas)
-                presas = _apply_keyword_soft(presas, keyword_l)
-                return presas[:40]
-
-            # ==========================================
-            # 2) CARDS: optimizado (evita hangs por DOM cambiante)
-            # ==========================================
-            cards = page.locator(
-                "li.product-item, "
-                "div.product-card, "
-                "div.product-item-info, "
-                "article, "
-                "div[class*='product-summary'], "
-                "div[class*='vtex-product-summary'], "
-                "div[class*='vtex-search-result']"
+            links = page.locator(
+                "a[href*='/p/'], a[href*='/product/'], a[href*='/producto/'], a[data-testid*='product']"
             )
+            cnt = links.count()
+            _log("scroll cards:", cnt)
 
-            # En vez de .all() (caro y a veces cuelga), limitamos por count y nth()
+            if cnt <= last_count:
+                stable += 1
+            else:
+                stable = 0
+                last_count = cnt
+
+            if stable >= 3:
+                break
+
+        links = page.locator(
+            "a[href*='/p/'], a[href*='/product/'], a[href*='/producto/'], a[data-testid*='product']"
+        )
+        total = min(links.count(), 140)
+        _log("total anchors:", links.count(), "-> scanning:", total)
+
+        for i in range(total):
+            if len(out) >= limit:
+                break
+
             try:
-                total = min(cards.count(), 120)
-            except Exception:
-                total = 0
+                a = links.nth(i)
+                href = a.get_attribute("href") or ""
+                if not href:
+                    continue
+                full_url = urljoin(base, href)
 
-            for idx in range(total):
-                try:
-                    card = cards.nth(idx)
-
-                    title_el = card.locator(
-                        "a.product-item-link, "
-                        "a.product-name, "
-                        "a[href*='/p/'], "
-                        "a[href]"
-                    ).first
-
-                    href = _safe_get_attr(title_el, "href", timeout_ms=600)
-                    if not href:
-                        continue
-                    href = urljoin(url_input, href)
-                    if _looks_like_facet_link(href):
-                        continue
-
-                    titulo = _safe_text(title_el, timeout_ms=900)
-                    if not titulo:
-                        # fallback attributes
-                        titulo = _clean_title(_safe_get_attr(title_el, "aria-label", 400))
-                    if not titulo:
-                        titulo = _clean_title(_safe_get_attr(title_el, "title", 400))
-
-                    if not titulo:
-                        continue
-                    if _looks_like_promo_text(titulo) or _looks_like_item_count_text(titulo):
-                        continue
-
-                    # -------- price --------
-                    precio = None
-
-                    amounts = card.locator("[data-price-amount]")
+                # Título
+                title = (a.get_attribute("title") or "").strip()
+                if not title:
                     try:
-                        amt_n = min(amounts.count(), 10)
+                        title = (a.inner_text() or "").strip()
                     except Exception:
-                        amt_n = 0
+                        title = ""
+                title = title.strip()
+                if not title:
+                    continue
+                if len(title) > 160:
+                    title = title[:160].strip()
 
-                    vals = []
-                    for j in range(amt_n):
-                        a = amounts.nth(j)
-                        raw = _safe_get_attr(a, "data-price-amount", timeout_ms=300)
-                        if not raw:
-                            continue
-                        try:
-                            v = float(raw)
-                            if v > 0:
-                                vals.append(v)
-                        except Exception:
-                            continue
-                    if vals:
-                        precio = int(min(vals))
-
-                    if not precio:
-                        price_el = card.locator(
-                            "span[class*='currencyContainer']:visible, "
-                            "span[class*='sellingPrice']:visible, "
-                            "[data-testid*='price']:visible, "
-                            "[class*='price']:visible, "
-                            "span.price:visible, "
-                            "div.price:visible"
-                        ).first
-
-                        precio_txt = _safe_text(price_el, timeout_ms=1200)
-                        if precio_txt and _is_probably_price_text(precio_txt):
-                            precio = _to_int_price(precio_txt)
-
-                    if not precio:
-                        continue
-                    if int(precio) > int(max_price):
-                        continue
-
-                    presas.append({"titulo": titulo[:120], "precio": int(precio), "link": href})
-
-                except Exception:
+                # Keyword
+                if keyword and not _kw_match(title, keyword):
                     continue
 
-            if presas:
-                presas = _dedup_by_link(presas)
-                presas = _apply_keyword_soft(presas, keyword_l)
-                return presas[:40]
-
-            # ==========================================
-            # 2.5) Subcategory auto-follow (1 salto máx)
-            # ==========================================
-            if depth == 0:
-                base = urlparse(url_input)
-                base_path = base.path.rstrip("/")
-
-                candidates = page.locator("main a[href], #maincontent a[href], a[href]")
+                # Precio cercano al contenedor
+                price = None
                 try:
-                    ctotal = min(candidates.count(), 350)
+                    container = a.locator("xpath=ancestor::*[self::article or self::div][1]")
+                    price_candidates = container.locator("text=/\\$\\s*\\d/")
+                    if price_candidates.count() > 0:
+                        raw_price = (price_candidates.first.inner_text() or "").strip()
+                        price = _parse_price_ar(raw_price)
                 except Exception:
-                    ctotal = 0
+                    price = None
 
-                for i in range(ctotal):
-                    try:
-                        a = candidates.nth(i)
-                        href = _safe_get_attr(a, "href", timeout_ms=300)
-                        if not href:
-                            continue
-
-                        href_full = urljoin(url_input, href)
-                        u = urlparse(href_full)
-
-                        if u.netloc != base.netloc:
-                            continue
-                        if not u.path.startswith(base_path):
-                            continue
-                        if "p=" in (u.query or ""):
-                            continue
-                        if _looks_like_facet_link(href_full):
-                            continue
-
-                        return hunt_offers_generic(href_full, keyword, max_price, depth=1)
-
-                    except Exception:
-                        continue
-
-            # ==========================================
-            # 3) Fallback: links con "precio real"
-            # ==========================================
-            links = page.locator("a")
-            try:
-                ltotal = min(links.count(), 300)
-            except Exception:
-                ltotal = 0
-
-            for i in range(ltotal):
-                try:
-                    link_el = links.nth(i)
-                    texto = _safe_text(link_el, timeout_ms=700)
-                    if not texto:
-                        continue
-                    if _looks_like_item_count_text(texto) or _looks_like_promo_text(texto):
-                        continue
-                    if not _is_probably_price_text(texto):
-                        continue
-
-                    precio = _to_int_price(texto)
-                    if not precio:
-                        continue
-                    if precio > int(max_price):
-                        continue
-
-                    href = _safe_get_attr(link_el, "href", timeout_ms=300)
-                    if not href:
-                        continue
-                    href = urljoin(url_input, href)
-                    if _looks_like_facet_link(href):
-                        continue
-
-                    presas.append({"titulo": texto[:120], "precio": int(precio), "link": href})
-
-                except Exception:
+                if price is None:
+                    continue
+                if max_price > 0 and price > max_price:
                     continue
 
-            presas = _dedup_by_link(presas)
-            presas = _apply_keyword_soft(presas, keyword_l)
-            return presas[:40]
+                if full_url in seen:
+                    continue
+                seen.add(full_url)
 
-        except KeyboardInterrupt:
-            # Para tests manuales: salir limpio
-            return []
-        finally:
-            try:
-                context.close()
+                out.append({"title": title, "price": price, "url": full_url, "source": "generic_dom"})
             except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
+                continue
+
+        browser.close()
+
+    _log("dom returned:", len(out))
+    return out
+
+
+# ----------------------------
+# Public entrypoint
+# ----------------------------
+
+def hunt_offers_generic(url: str, keyword: str = "", max_price: Any = 0, depth: int = 1) -> List[Dict[str, Any]]:
+    """
+    Un único entrypoint para OfferHunter.
+    Decide estrategia según dominio.
+    """
+    host = urlparse(url).netloc.lower()
+    max_price_i = _ensure_int(max_price, 0)
+
+    _log("URL:", url)
+    _log("keyword:", repr(keyword), "max_price:", max_price_i)
+
+    # Carrefour: SI o SI API, porque DOM te dio anchors=0
+    if "carrefour.com.ar" in host:
+        _log("strategy: carrefour_api")
+        return _carrefour_api_search(url, keyword, max_price_i, limit=80)
+
+    # Otros: fallback DOM con Playwright
+    _log("strategy: playwright_dom")
+    return _hunt_offers_playwright_dom(url, keyword, max_price_i, limit=80)

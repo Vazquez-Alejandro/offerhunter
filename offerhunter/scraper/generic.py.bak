@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+import os
+import re
+import unicodedata
+from urllib.parse import urljoin, urlparse
+
+from playwright.sync_api import sync_playwright
+
+
+# ==========================================================
+# Debug
+# ==========================================================
+def _debug_enabled() -> bool:
+    return os.getenv("OH_SCRAPER_DEBUG", "").strip() not in ("", "0", "false", "False")
+
+
+def _dprint(*args):
+    if _debug_enabled():
+        print(*args)
+
+
+# ==========================================================
+# Text / matching helpers
+# ==========================================================
+def _norm(s: str) -> str:
+    s = (s or "").lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _keyword_match(title: str, keyword: str) -> bool:
+    k = _norm(keyword)
+    if not k:
+        return True
+    t = _norm(title)
+    toks = [x for x in k.split(" ") if x]
+    return all(tok in t for tok in toks)
+
+
+# ==========================================================
+# Price parsing (AR)
+# ==========================================================
+_PRICE_RE = re.compile(r"[\$]?\s*([0-9][0-9\.\,]*)")
+
+
+def _parse_price_ar(text: str) -> int | None:
+    """
+    Parses: "$ 5.639,00" -> 5639
+            "18.000"     -> 18000
+            "$18000"     -> 18000
+    """
+    if not text:
+        return None
+    m = _PRICE_RE.search(text)
+    if not m:
+        return None
+    s = m.group(1)
+    # drop decimals
+    if "," in s:
+        s = s.split(",")[0]
+    # remove thousands separators
+    s = s.replace(".", "")
+    if not s.isdigit():
+        return None
+    v = int(s)
+    return v if v > 0 else None
+
+
+# ==========================================================
+# Page helpers
+# ==========================================================
+def _safe_text(locator, timeout_ms: int = 800) -> str:
+    try:
+        return (locator.inner_text(timeout=timeout_ms) or "").strip()
+    except Exception:
+        return ""
+
+
+def _safe_attr(locator, name: str, timeout_ms: int = 800) -> str:
+    try:
+        v = locator.get_attribute(name, timeout=timeout_ms)
+        return (v or "").strip()
+    except Exception:
+        return ""
+
+
+def _kick_lazy_load(page, max_rounds: int = 18) -> None:
+    """
+    Scrolls until the product card count stops increasing.
+    Works well for VTEX/Carrefour category pages.
+    """
+    prev = -1
+    stable = 0
+
+    for _ in range(max_rounds):
+        try:
+            page.mouse.wheel(0, 2400)
+        except Exception:
+            pass
+        try:
+            page.wait_for_timeout(650)
+        except Exception:
+            pass
+
+        try:
+            c = page.locator(
+                "li.product-item, div.vtex-product-summary-2-x-container, "
+                "div[class*='vtex-product-summary'], article, div.product-card"
+            ).count()
+        except Exception:
+            c = 0
+
+        _dprint("[generic] lazy cards:", c)
+
+        if c == prev:
+            stable += 1
+        else:
+            stable = 0
+            prev = c
+
+        if stable >= 3:
+            break
+
+
+def _looks_like_facet(url: str) -> bool:
+    # very common facet/sort/query links
+    u = urlparse(url)
+    q = (u.query or "").lower()
+    p = (u.path or "").lower()
+    bad_q = ("map=", "order=", "fq=", "cluster", "refinement", "filter", "price-range")
+    if any(x in q for x in bad_q):
+        return True
+    # avoid non-product utility pages
+    if any(x in p for x in ("/search", "/busca", "/categoria", "/category")):
+        return False
+    return False
+
+
+def _extract_title(card) -> str:
+    # Try a few common title patterns
+    candidates = [
+        "h3",
+        "h2",
+        "[data-testid*='product-name']",
+        "[class*='productName']",
+        "[class*='product-name']",
+        "a[title]",
+        "a[href*='/p/']",
+        "a[href]",
+    ]
+    for sel in candidates:
+        el = card.locator(sel).first
+        t = _safe_text(el, 700)
+        if not t:
+            t = _safe_attr(el, "title", 700)
+        # ignore junk
+        if t and len(t) >= 4:
+            return t.strip()
+    return ""
+
+
+def _extract_href(card, base_url: str) -> str:
+    # prefer product links
+    el = card.locator("a[href*='/p/']").first
+    href = _safe_attr(el, "href", 700)
+    if not href:
+        el = card.locator("a[href]").first
+        href = _safe_attr(el, "href", 700)
+    if not href:
+        return ""
+    href = urljoin(base_url, href)
+    return href
+
+
+def _extract_price(card) -> int | None:
+    # VTEX often provides data-price-amount (numeric)
+    amounts = card.locator("[data-price-amount]")
+    try:
+        n = min(amounts.count(), 12)
+    except Exception:
+        n = 0
+
+    vals = []
+    for i in range(n):
+        raw = _safe_attr(amounts.nth(i), "data-price-amount", 300)
+        if not raw:
+            continue
+        try:
+            f = float(raw)
+            if f > 0:
+                vals.append(int(f))
+        except Exception:
+            continue
+    if vals:
+        return min(vals)
+
+    # fallback to visible text
+    price_el = card.locator(
+        "span[class*='currencyContainer']:visible, "
+        "span[class*='sellingPrice']:visible, "
+        "[data-testid*='price']:visible, "
+        "span.price:visible, div.price:visible, "
+        "[class*='price']:visible"
+    ).first
+    txt = _safe_text(price_el, 1200)
+    if not txt:
+        # sometimes price is not "visible" in locator terms, try any price class
+        txt = _safe_text(card.locator("[class*='price']").first, 800)
+
+    return _parse_price_ar(txt)
+
+
+# ==========================================================
+# Main entry
+# ==========================================================
+def hunt_offers_generic(url_input: str, keyword: str, max_price: int, depth: int = 0):
+    """
+    Returns list of dicts: {title, price, url, source}
+    Uses Playwright (headless) so it works for lazy-load pages (Carrefour/VTEX).
+    """
+    keyword = (keyword or "").strip()
+    try:
+        max_price = int(max_price)
+    except Exception:
+        max_price = 0
+
+    _dprint("[generic] url=", url_input)
+    _dprint("[generic] keyword=", repr(keyword), "max_price=", max_price, "depth=", depth)
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 900},
+        )
+        page = context.new_page()
+        page.set_default_timeout(6000)
+        page.set_default_navigation_timeout(30000)
+
+        try:
+            page.goto(url_input, wait_until="domcontentloaded", timeout=30000)
+            _kick_lazy_load(page)
+
+            cards = page.locator(
+                "li.product-item, div.vtex-product-summary-2-x-container, "
+                "div[class*='vtex-product-summary'], article, div.product-card"
+            )
+            try:
+                total = min(cards.count(), 160)
+            except Exception:
+                total = 0
+
+            _dprint("[generic] card candidates:", total)
+
+            for idx in range(total):
+                card = cards.nth(idx)
+
+                href = _extract_href(card, url_input)
+                if not href:
+                    continue
+                if href in seen:
+                    continue
+
+                title = _extract_title(card)
+                if not title:
+                    continue
+
+                # keyword strict (no more Capri when keyword=branca)
+                if keyword and not _keyword_match(title, keyword):
+                    continue
+
+                price = _extract_price(card)
+                if price is None:
+                    continue
+                if max_price > 0 and price > max_price:
+                    continue
+
+                seen.add(href)
+                results.append(
+                    {"title": title.strip(), "price": price, "url": href, "source": "generic"}
+                )
+
+            # If we couldn't find cards and it's a category page, try to jump to a product link once
+            if not results and depth == 0:
+                candidates = page.locator("a[href*='/p/']")
+                try:
+                    ctotal = min(candidates.count(), 80)
+                except Exception:
+                    ctotal = 0
+
+                base = urlparse(url_input)
+                base_path = (base.path or "/").rstrip("/") + "/"
+
+                for i in range(ctotal):
+                    a = candidates.nth(i)
+                    href = _safe_attr(a, "href", 500)
+                    if not href:
+                        continue
+                    href_full = urljoin(url_input, href)
+                    u = urlparse(href_full)
+                    if u.netloc != base.netloc:
+                        continue
+                    if not (u.path or "").startswith(base_path):
+                        # allow jumping to product even if not under same path
+                        pass
+                    # recurse once
+                    browser.close()
+                    return hunt_offers_generic(href_full, keyword, max_price, depth=1)
+
+            browser.close()
+            return results
+
+        except Exception as e:
+            _dprint("[generic] ERROR:", repr(e))
+            try:
+                browser.close()
+            except Exception:
+                pass
+            return []
