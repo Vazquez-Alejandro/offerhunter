@@ -1,42 +1,3 @@
-cat > .gitignore <<'EOF'
-# Databases
-*.db
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual envs
-.venv/
-venv/
-ENV/
-offerhunter/venv_bots/
-
-# Streamlit
-.streamlit/
-offerhunter/.streamlit/
-
-# Browser profiles / caches (Playwright)
-offerhunter/bot_profile/
-offerhunter/chrome_profile/
-offerhunter/ff_profile/
-
-# Sessions / secrets
-offerhunter/sessions/*.json
-
-# Logs
-*.log
-
-# VSCode
-.vscode/
-EOF
-
-printf "\n# Archives / multipart zips\n*.zip\n*.z[0-9][0-9]\n" >> .gitignore
-# Archives / multipart zips
-*.zip
-*.z[0-9][0-9]
-
 # Env / secrets
 .env
 *.env
@@ -50,6 +11,9 @@ ff_profile/
 venv_bots/
 .venv/
 venv/
+
+# Sessions
+sessions/*.json
 
 # Python cache
 __pycache__/

@@ -1,17 +1,24 @@
-# Base de datos (¡IMPORTANTE!)
+# Databases
 *.db
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Virtual envs
 .venv/
 venv/
 ENV/
 
-# Streamlit
-.streamlit/
-# Archives / multipart zips (repo root)
+# Archives / multipart zips
 OfferHunter_Proyecto.zip
 OfferHunter_Proyecto.z*
 *.z[0-9][0-9]
+*.zip
+
+# Logs
+*.log
+
+# VSCode
+.vscode/
