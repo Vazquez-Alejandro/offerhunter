@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 from .generic import hunt_offers_generic
+from .despegar import hunt_despegar_vuelos
 
 # -------------------------------------------------
 # Config
@@ -312,5 +313,8 @@ def hunt_offers(url: str, keyword: str, max_price: int):
         if res and isinstance(res[0], dict) and res[0].get("blocked"):
             return []
         return res
+
+    if "despegar.com" in host:
+        return hunt_despegar_vuelos(url, keyword, max_price)
 
     return hunt_offers_generic(url, keyword, max_price)

@@ -21,6 +21,7 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
+LOGO_PATH = os.path.join(BASE_DIR, "assets", "img", "logo.png")
 DEFAULT_SOURCE = "mercadolibre"
 
 
@@ -345,110 +346,62 @@ if type_param == "recovery" and access_token:
 # Auth / Login / Register
 # -----------------------------
 if "user_logged" not in st.session_state:
-    AUTH_FORM_WIDTH = "460px"
-    PLAN_CARDS_WIDTH = "980px"
-    TABS_WIDTH = "640px"
-
-    logo_b64 = get_base64_logo("offerhunter/assets/img/logo.png")
+    logo_b64 = get_base64_logo(LOGO_PATH)
 
     st.markdown(
         f"""
-        <style>
-        .oh-auth-tabs {{
-            max-width: {TABS_WIDTH};
-            margin: 0 auto 1rem auto;
-        }}
-
-        .oh-auth-form {{
-            max-width: {AUTH_FORM_WIDTH};
-            margin: 0 auto;
-        }}
-
-        .oh-plans-shell {{
-            max-width: {PLAN_CARDS_WIDTH};
-            margin: 0 auto;
-        }}
-
-        .oh-logo-wrap {{
-            display: flex;
-            justify-content: center;
-            margin-top: 24px;
-            margin-bottom: 18px;
-        }}
-
-        .oh-logo-badge {{
-            width: 190px;
-            height: 190px;
-            border-radius: 50%;
-            overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow:
-                0 0 24px rgba(255,255,255,0.42),
-                0 0 72px rgba(255,255,255,0.16);
-            background: transparent;
-        }}
-
-        .oh-logo-badge img {{
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
-        }}
-
-        .oh-auth-divider {{
-            max-width: {PLAN_CARDS_WIDTH};
-            margin: 0.4rem auto 1.2rem auto;
-            border-bottom: 1px solid rgba(255,255,255,0.10);
-        }}
-
-        .oh-auth-form div[data-testid="stVerticalBlock"] {{
-            gap: 0.45rem;
-        }}
-        </style>
-
-        <div class="oh-logo-wrap">
-          <div class="oh-logo-badge">
-            <img src="data:image/png;base64,{logo_b64}" />
+        <div style="display:flex;justify-content:center;margin-top:36px;margin-bottom:20px;">
+          <div style="
+                width:190px;
+                height:190px;
+                border-radius:50%;
+                overflow:hidden;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                background:#ffffff;
+                border:12px solid #050505;
+                box-shadow:
+                    0 0 0 6px rgba(255,255,255,0.05),
+                    0 0 26px rgba(255,255,255,0.22),
+                    0 0 70px rgba(255,255,255,0.14),
+                    0 0 120px rgba(255,255,255,0.08);
+          ">
+            <img src="data:image/png;base64,{logo_b64}" style="width:100%;height:100%;object-fit:cover;display:block;transform:scale(1.02);" />
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="oh-auth-tabs">', unsafe_allow_html=True)
     t1, t2 = st.tabs(["🔐 Iniciar Sesión", "🐾 Unirse a la Jauría"])
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown('<div class="oh-auth-divider"></div>', unsafe_allow_html=True)
 
     with t1:
-        st.markdown('<div class="oh-auth-form">', unsafe_allow_html=True)
-        u = st.text_input("Usuario o Email", key="l_u")
-        p = st.text_input("Contraseña", type="password", key="l_p")
+        _, col_main, _ = st.columns([1.25, 1.5, 1.25])
+        with col_main:
+            u = st.text_input("Usuario o Email", key="l_u")
+            p = st.text_input("Contraseña", type="password", key="l_p")
 
-        if st.button("Entrar", width="stretch", type="primary", key="l_submit"):
-            user, err = supa_login(u, p)
-            if user:
-                st.session_state["user_logged"] = user
-                st.rerun()
-            else:
-                st.error(f"❌ {err}")
-
-        if st.button("Olvidé mi contraseña", width="stretch", key="l_reset"):
-            if "@" in (u or ""):
-                ok = supa_reset_password(u)
-                if ok:
-                    st.success("📩 Te enviamos un email para restablecer la contraseña.")
+            if st.button("Entrar", use_container_width=True, type="primary", key="l_submit"):
+                user, err = supa_login(u, p)
+                if user:
+                    st.session_state["user_logged"] = user
+                    st.rerun()
                 else:
-                    st.error("No se pudo enviar el email.")
-            else:
-                st.warning("Ingresá tu EMAIL arriba para restablecer la contraseña.")
-        st.markdown("</div>", unsafe_allow_html=True)
+                    st.error(f"❌ {err}")
+
+            if st.button("Olvidé mi contraseña", use_container_width=True, key="l_reset"):
+                if "@" in (u or ""):
+                    ok = supa_reset_password(u)
+                    if ok:
+                        st.success("📩 Te enviamos un email para restablecer la contraseña.")
+                    else:
+                        st.error("No se pudo enviar el email.")
+                else:
+                    st.warning("Ingresá tu EMAIL arriba para restablecer la contraseña.")
 
     with t2:
         if "plan_elegido" not in st.session_state:
-            st.markdown('<div class="oh-plans-shell">', unsafe_allow_html=True)
             st.subheader("Elegí tu rango en la manada")
 
             c1, c2, c3 = st.columns(3, gap="large")
@@ -464,7 +417,7 @@ if "user_logged" not in st.session_state:
                     """,
                     unsafe_allow_html=True,
                 )
-                if st.button("Elegir Omega", width="stretch", key="choose_omega"):
+                if st.button("Elegir Omega", use_container_width=True, key="choose_omega"):
                     st.session_state["plan_elegido"] = "omega"
                     st.rerun()
 
@@ -481,7 +434,7 @@ if "user_logged" not in st.session_state:
                     """,
                     unsafe_allow_html=True,
                 )
-                if st.button("Elegir Beta", width="stretch", key="choose_beta"):
+                if st.button("Elegir Beta", use_container_width=True, key="choose_beta"):
                     st.session_state["plan_elegido"] = "beta"
                     st.rerun()
 
@@ -497,30 +450,29 @@ if "user_logged" not in st.session_state:
                     """,
                     unsafe_allow_html=True,
                 )
-                if st.button("Elegir Alfa", width="stretch", key="choose_alfa"):
+                if st.button("Elegir Alfa", use_container_width=True, key="choose_alfa"):
                     st.session_state["plan_elegido"] = "alfa"
                     st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+
         else:
-            st.markdown('<div class="oh-auth-form">', unsafe_allow_html=True)
-            plan = st.session_state["plan_elegido"]
-            st.info(f"Registrando nuevo miembro · Rango {plan.capitalize()}")
+            _, col_main, _ = st.columns([1.25, 1.5, 1.25])
+            with col_main:
+                plan = st.session_state["plan_elegido"]
+                st.info(f"Registrando nuevo miembro · Rango {plan.capitalize()}")
 
-            nu = st.text_input("Usuario", key="r_user")
-            em = st.text_input("Email", key="r_email")
-            np = st.text_input("Contraseña", type="password", key="r_pass")
+                nu = st.text_input("Usuario", key="r_user")
+                em = st.text_input("Email", key="r_email")
+                np = st.text_input("Contraseña", type="password", key="r_pass")
 
-            if st.button("Finalizar Registro", width="stretch", key="r_submit"):
-                user, err = supa_signup(em, np, nu, plan)
-                if user:
-                    st.success("✅ Cuenta creada. Revisá tu email para confirmar.")
-                    st.stop()
-                else:
-                    st.error(f"❌ {err}")
-            st.markdown("</div>", unsafe_allow_html=True)
+                if st.button("Finalizar Registro", use_container_width=True, key="r_submit"):
+                    user, err = supa_signup(em, np, nu, plan)
+                    if user:
+                        st.success("✅ Cuenta creada. Revisá tu email para confirmar.")
+                        st.stop()
+                    else:
+                        st.error(f"❌ {err}")
 
     st.stop()
-
 
 # -----------------------------
 # Main panel
@@ -836,10 +788,10 @@ if st.session_state["busquedas"]:
                         st.error(f"Error eliminando caza: {e}")
 
                 # Resultados
-                st.caption(f"DEBUG rid={rid} key=last_res_{rid} exists={('last_res_'+rid) in st.session_state}")
+                #t.caption(f"DEBUG rid={rid} key=last_res_{rid} exists={('last_res_'+rid) in st.session_state}")
 
                 res = st.session_state.get(f"last_res_{rid}", []) or []
-                st.caption(f"DEBUG res_len={len(res)} type={type(res)} first={res[0] if res else None}")
+                #t.caption(f"DEBUG res_len={len(res)} type={type(res)} first={res[0] if res else None}")
 
                 if res:
                     seen = set()
@@ -862,12 +814,12 @@ if st.session_state["busquedas"]:
                         c1, c2 = st.columns([3, 1])
 
                         with c1:
-                            titulo = " ".join(str(r.get("title") or r.get("titulo") or "").split())
+                            titulo = " ".join(str(r.get("titulo", "")).split())
                             if len(titulo) > 90:
                                 titulo = titulo[:87] + "…"
                             st.write(titulo)
 
-                            precio = r.get("price", r.get("precio", 0))
+                            precio = r.get("price") or r.get("precio") or 0
                             try:
                                 st.caption(f"${int(precio):,}".replace(",", "."))
                             except Exception:

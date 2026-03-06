@@ -5,6 +5,29 @@ from urllib.parse import urlparse
 from auth.supabase_client import supabase
 from config import PLAN_LIMITS
 
+import re
+
+def _parse_price_to_int(value) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return 0
+    # "1200000.0"
+    if re.fullmatch(r"\d+\.\d{1,2}", s):
+        s = s.split(".", 1)[0]
+    digits = re.sub(r"[^\d]", "", s)
+    if not digits:
+        return 0
+    try:
+        return int(digits)
+    except Exception:
+        return 0
+
 
 def _infer_source_from_url(url: str) -> str:
     try:
@@ -67,7 +90,7 @@ def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, pl
             "user_id": user_id,
             "producto": (producto or "").strip(),
             "link": (url or "").strip(),
-            "precio_max": precio_max,
+            "precio_max": _parse_price_to_int(precio_max),
             "frecuencia": (frecuencia or "").strip(),
             "tipo_alerta": (tipo_alerta or "piso").strip().lower(),
             "plan": plan,
@@ -75,6 +98,9 @@ def guardar_caza(user_id, producto, url, precio_max, frecuencia, tipo_alerta, pl
             "source": source,
             "last_check": None,
         }
+        print("DEBUG payload precio_max:", payload["precio_max"], type(payload["precio_max"]))
+
+        ins = supabase.table("cazas").insert(payload).execute()
 
         ins = supabase.table("cazas").insert(payload).execute()
         return True if getattr(ins, "data", None) else False
