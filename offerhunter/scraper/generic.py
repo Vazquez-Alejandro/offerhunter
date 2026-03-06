@@ -294,8 +294,18 @@ def _hunt_offers_playwright_dom(url: str, keyword: str, max_price: int, limit: i
                         title = (a.inner_text() or "").strip()
                     except Exception:
                         title = ""
+
                 title = title.strip()
+
+                # cortar basura típica de Frávega
+                cut_tokens = ["Vendido por", "$", "Precio s/imp", "Precio s/imp.", "Precio s/imp. nac"]
+                for tok in cut_tokens:
+                    if tok in title:
+                        title = title.split(tok)[0].strip()
+
+                # si venía con saltos de línea, quedarnos con la primera línea
                 title = title.split("\n")[0].strip()
+
                 if not title:
                     continue
                 if len(title) > 160:
