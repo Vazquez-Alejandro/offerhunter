@@ -315,7 +315,12 @@ def _hunt_offers_playwright_dom(url: str, keyword: str, max_price: int, limit: i
 
                     for j in range(total_prices):
                         try:
-                            raw_price = (price_candidates.nth(j).inner_text() or "").strip()
+                            raw_price = (price_candidates.nth(j).inner_text() or "").strip().lower()
+
+                            # ignorar precios sin impuesto nacional
+                            if "imp" in raw_price or "nac" in raw_price:
+                                continue
+
                             p = _parse_price_ar(raw_price)
                             if p is not None and p > 0:
                                 parsed_prices.append(p)
