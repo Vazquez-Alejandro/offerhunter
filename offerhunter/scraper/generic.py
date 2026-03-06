@@ -295,11 +295,11 @@ def _hunt_offers_playwright_dom(url: str, keyword: str, max_price: int, limit: i
                     except Exception:
                         title = ""
                 title = title.strip()
+                title = title.split("\n")[0].strip()
                 if not title:
                     continue
                 if len(title) > 160:
-                    title = title[:160].strip()
-
+                    title = title[:160].strip()         
                 # Keyword
                 if keyword and not _kw_match(title, keyword):
                     continue
@@ -309,9 +309,21 @@ def _hunt_offers_playwright_dom(url: str, keyword: str, max_price: int, limit: i
                 try:
                     container = a.locator("xpath=ancestor::*[self::article or self::div][1]")
                     price_candidates = container.locator("text=/\\$\\s*\\d/")
-                    if price_candidates.count() > 0:
-                        raw_price = (price_candidates.first.inner_text() or "").strip()
-                        price = _parse_price_ar(raw_price)
+
+                    parsed_prices = []
+                    total_prices = min(price_candidates.count(), 12)
+
+                    for j in range(total_prices):
+                        try:
+                            raw_price = (price_candidates.nth(j).inner_text() or "").strip()
+                            p = _parse_price_ar(raw_price)
+                            if p is not None and p > 0:
+                                parsed_prices.append(p)
+                        except Exception:
+                            continue
+
+                    if parsed_prices:
+                        price = min(parsed_prices)
                 except Exception:
                     price = None
 
