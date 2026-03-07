@@ -22,7 +22,7 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 BASE_DIR = os.path.dirname(__file__)
 WOLF_PATH = os.path.join(BASE_DIR, "assets", "wolf.mp3")
 LOGO_PATH = os.path.join(BASE_DIR, "assets", "img", "logo.png")
-DEFAULT_SOURCE = "mercadolibre"
+DEFAULT_SOURCE = "generic"
 
 
 # -----------------------------
@@ -842,7 +842,7 @@ if st.session_state["busquedas"]:
                 res = sorted(res, key=_safe_price)                    
 
                 with st.expander(f"✅ Resultados ({len(res)})", expanded=True):
-                    for r in res[:5]:
+                    for r in res[:10]:
                         c1, c2 = st.columns([3, 1])
 
                         with c1:
