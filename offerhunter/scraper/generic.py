@@ -140,7 +140,7 @@ def _carrefour_api_search(category_url: str, keyword: str, max_price: int, limit
         params = {"_from": start, "_to": end}
 
         try:
-            r = requests.get(api, params=params, headers=headers, timeout=30)
+            r = requests.get(api, params=params, headers=headers, timeout=12)
         except Exception as e:
             _log("carrefour API error:", e)
             break
@@ -243,9 +243,9 @@ def _hunt_offers_playwright_dom(url: str, keyword: str, max_price: int, limit: i
 
         page.goto(url, wait_until="domcontentloaded")
         try:
-            page.wait_for_load_state("networkidle", timeout=45000)
+            page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
-            pass
+            _log("networkidle timeout - continuing")
         time.sleep(1.0)
 
         # Scroll para lazy-load
