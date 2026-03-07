@@ -747,20 +747,44 @@ if st.session_state["busquedas"]:
 
                         try:
                             host = domain_from_url(url2)
-                            if "mercadolibre" in host:
-                                from scraper.scraper_pro import hunt_offers as hunt_offers_ml
 
-                                resultados = hunt_offers_ml(url2, kw2, precio2) or []
+                            # -----------------------------
+                            # MERCADOLIBRE
+                            # -----------------------------
+                            if "mercadolibre" in host:
+                                from scraper.scraper_pro import hunt_offers
+
+                                resultados = hunt_offers(url2, kw2, precio2) or []
 
                                 if not resultados:
                                     st.info(
                                         "MercadoLibre está bloqueando búsquedas automatizadas desde esta red (captcha/403). "
-                                        "Por ahora probá con tiendas genéricas (Carrefour/VTEX/etc.). "
-                                        "Luego lo resolvemos con proxy u OAuth."
+                                        "Por ahora probá con tiendas genéricas."
                                     )
+
+                            # -----------------------------
+                            # DESPEGAR
+                            # -----------------------------
+                            elif "despegar" in host:
+                                from scraper.scraper_pro import hunt_offers
+
+                                resultados = hunt_offers(url2, kw2, precio2) or []
+
+                                if resultados and resultados[0].get("blocked"):
+                                    st.info(
+                                        "✈️ Despegar está bloqueando búsquedas automáticas desde esta red.\n\n"
+                                        "La detección funciona correctamente. Más adelante se resolverá "
+                                        "con una estrategia especial para vuelos."
+                                    )
+                                    resultados = []
+
+                            # -----------------------------
+                            # GENERIC STORES
+                            # -----------------------------
                             else:
                                 from scraper.generic import hunt_offers_generic
                                 resultados = hunt_offers_generic(url2, kw2, precio2)
+
                         except Exception as e:
                             st.warning(f"Error al rastrear: {e}")
                             resultados = []
@@ -773,7 +797,7 @@ if st.session_state["busquedas"]:
                             st.session_state["sound_tick"] += 1
                             st.session_state["play_sound"] = True
 
-                       # st.rerun()
+                        # st.rerun()
 
                 if st.button("🗑️ Eliminar", key=f"del_{rid}", use_container_width=True):
                     try:
@@ -787,20 +811,19 @@ if st.session_state["busquedas"]:
                     except Exception as e:
                         st.error(f"Error eliminando caza: {e}")
 
+             
                 # Resultados
-                #t.caption(f"DEBUG rid={rid} key=last_res_{rid} exists={('last_res_'+rid) in st.session_state}")
-
                 res = st.session_state.get(f"last_res_{rid}", []) or []
-                #t.caption(f"DEBUG res_len={len(res)} type={type(res)} first={res[0] if res else None}")
 
                 if res:
                     seen = set()
                     uniq = []
+
                     for item in res:
                         key = (
-                            str(item.get("link") or ""),
-                            str(item.get("titulo") or ""),
-                            str(item.get("precio") or ""),
+                            str(item.get("url") or item.get("link") or ""),
+                            str(item.get("title") or item.get("titulo") or ""),
+                            str(item.get("price") or item.get("precio") or ""),
                         )
                         if key in seen:
                             continue
@@ -809,12 +832,21 @@ if st.session_state["busquedas"]:
 
                     res = uniq
 
+                # ordenar por precio ascendente
+                def _safe_price(x):
+                    try:
+                        return int(x.get("price") or x.get("precio") or 999999999)
+                    except Exception:
+                        return 999999999
+
+                res = sorted(res, key=_safe_price)                    
+
                 with st.expander(f"✅ Resultados ({len(res)})", expanded=True):
-                    for r in res[:10]:
+                    for r in res[:5]:
                         c1, c2 = st.columns([3, 1])
 
                         with c1:
-                            titulo = " ".join(str(r.get("titulo", "")).split())
+                            titulo = " ".join(str(r.get("title") or r.get("titulo") or "").split())
                             if len(titulo) > 90:
                                 titulo = titulo[:87] + "…"
                             st.write(titulo)
@@ -826,7 +858,11 @@ if st.session_state["busquedas"]:
                                 st.caption(f"${precio}")
 
                         with c2:
-                            st.link_button("Ver", r.get("link", "#"), use_container_width=True)
+                            link = r.get("url") or r.get("link") or ""
+                            if link:
+                                st.link_button("Ver", link, width="stretch")
+                            else:
+                                st.button("Sin link", disabled=True, width="stretch")
 
 # Sonido (al final, mismo rerun)
 if st.session_state.get("play_sound"):
