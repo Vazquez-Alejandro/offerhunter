@@ -8,12 +8,24 @@ def _parse_price(text):
     return int(digits) if digits else None
 
 
-def hunt_despegar_vuelos(url, keyword="", max_price=0):
+def _looks_blocked(html_lower: str) -> bool:
+    needles = [
+        "acceso restringido temporalmente",
+        "hemos detectado un comportamiento inusual",
+        "comportamiento del navegador",
+        "servicio de asistencia al cliente",
+        "access denied",
+        "forbidden",
+        "captcha",
+        "recaptcha",
+    ]
+    return any(x in html_lower for x in needles)
 
+
+def hunt_despegar_vuelos(url, keyword="", max_price=0):
     presas = []
 
     with sync_playwright() as p:
-
         browser = p.chromium.launch(headless=False)
 
         context = browser.new_context(
@@ -21,34 +33,49 @@ def hunt_despegar_vuelos(url, keyword="", max_price=0):
         )
 
         page = context.new_page()
-
         page.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
         print("✈️ Despegar: cargando página...")
         page.goto(url, wait_until="domcontentloaded")
+        time.sleep(4)
 
-        time.sleep(6)
+        try:
+            html_lower = page.content().lower()
+        except Exception:
+            html_lower = ""
 
-        # scroll para que carguen vuelos
+        if html_lower and _looks_blocked(html_lower):
+            print("🧩 Despegar: acceso restringido / bloqueo detectado.")
+            browser.close()
+            return [{"source": "despegar", "blocked": True, "url": url}]
+
         for _ in range(6):
-            page.mouse.wheel(0, 2000)
+            try:
+                page.mouse.wheel(0, 2000)
+            except Exception:
+                pass
             time.sleep(1)
 
-        # buscar cualquier bloque que contenga precios
-        candidates = page.locator("text=/\\$\\s*\\d/")
+        try:
+            html_lower = page.content().lower()
+        except Exception:
+            html_lower = ""
 
+        if html_lower and _looks_blocked(html_lower):
+            print("🧩 Despegar: acceso restringido / bloqueo detectado después del scroll.")
+            browser.close()
+            return [{"source": "despegar", "blocked": True, "url": url}]
+
+        candidates = page.locator("text=/\\$\\s*\\d/")
         total = min(candidates.count(), 60)
 
         seen = set()
 
         for i in range(total):
-
             try:
-
                 raw_price = candidates.nth(i).inner_text()
-
                 price = _parse_price(raw_price)
 
                 if not price:
@@ -57,32 +84,28 @@ def hunt_despegar_vuelos(url, keyword="", max_price=0):
                 if max_price and price > max_price:
                     continue
 
-                # intentar obtener contenedor del vuelo
                 container = candidates.nth(i).locator(
                     "xpath=ancestor::*[self::div or self::article][1]"
                 )
-
                 text = container.inner_text()
+                title = text.split("\n")[0][:120].strip()
 
-                title = text.split("\n")[0][:120]
-
-                if price in seen:
+                key = (title, price)
+                if key in seen:
                     continue
-
-                seen.add(price)
+                seen.add(key)
 
                 presas.append(
                     {
-                        "title": title,
+                        "title": title or "Vuelo Despegar",
                         "price": price,
                         "url": url,
                         "source": "despegar",
                     }
                 )
 
-            except:
+            except Exception:
                 continue
 
         browser.close()
-
-    return presas
+        return presas
