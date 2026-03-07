@@ -233,6 +233,8 @@ def _scrape_mercadolibre(url_input: str, keyword: str, max_price: int, *, headle
                 return []
 
             n = min(count_cards, 60)
+            seen_keys = set()
+
             for i in range(n):
                 try:
                     card = cards.nth(i)
@@ -247,14 +249,47 @@ def _scrape_mercadolibre(url_input: str, keyword: str, max_price: int, *, headle
                             link = "https://www.mercadolibre.com.ar" + link
 
                     title = ""
-                    tloc = card.locator(
-                        "h2.ui-search-item__title, h2, span.poly-component__title, a.ui-search-link"
-                    ).first
-                    if tloc.count() > 0:
-                        title = (tloc.inner_text() or "").strip()
+
+                    for sel in [
+                        "h2.ui-search-item__title",
+                        "span.poly-component__title",
+                        "a.ui-search-link",
+                        "h2",
+                    ]:
+                        try:
+                            loc = card.locator(sel).first
+                            if loc.count() == 0:
+                                continue
+
+                            txt = (loc.inner_text() or "").strip()
+                            if not txt:
+                                continue
+
+                            txt_l = txt.lower().strip()
+                            if txt_l in {
+                                "apple tienda oficial",
+                                "tienda oficial",
+                                "patrocinado",
+                            }:
+                                continue
+
+                            title = txt
+                            break
+                        except Exception:
+                            continue
+
                     if not title:
                         txt = (card.inner_text() or "").strip()
-                        title = (txt.split("\n")[0].strip() if txt else "")
+                        lines = [x.strip() for x in txt.split("\n") if x.strip()]
+                        for ln in lines:
+                            ln_l = ln.lower().strip()
+                            if ln_l in {"apple tienda oficial", "tienda oficial", "patrocinado"}:
+                                continue
+                            if "$" in ln:
+                                continue
+                            title = ln
+                            break
+
                     if not title:
                         continue
 
@@ -274,6 +309,11 @@ def _scrape_mercadolibre(url_input: str, keyword: str, max_price: int, *, headle
                         continue
                     if max_price_i > 0 and int(precio) > max_price_i:
                         continue
+
+                    key = ((link or target_url).strip(), int(precio))
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
 
                     presas.append(
                         {
