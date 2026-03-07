@@ -293,6 +293,12 @@ def _scrape_mercadolibre(url_input: str, keyword: str, max_price: int, *, headle
                     if not title:
                         continue
 
+                    # filtro por keyword
+                    if keyword:
+                        kw_l = keyword.lower().strip()
+                        if kw_l not in title.lower():
+                            continue
+
                     precio = None
                     ploc = card.locator(
                         "span.andes-money-amount__fraction, span.price-tag-fraction"
