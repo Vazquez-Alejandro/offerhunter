@@ -290,16 +290,31 @@ def _scrape_mercadolibre(url_input: str, keyword: str, max_price: int, *, headle
                             title = ln
                             break
 
-                    if not title:
-                        continue
-
-                    # filtro por múltiples keywords
-                    if keyword:
-                        tokens = [t.strip().lower() for t in keyword.split() if t.strip()]
-                        title_l = title.lower()
-
-                        if not all(tok in title_l for tok in tokens):
+                        if not title:
                             continue
+
+                        title_l = title.lower().strip()
+
+                        # filtrar títulos basura / accesorios de card
+                        bad_fragments = [
+                            "disponible en",
+                            "colores",
+                            "envío gratis",
+                            "llega gratis",
+                            "cuotas sin interés",
+                            "mismo precio en",
+                        ]
+
+                        if any(frag in title_l for frag in bad_fragments):
+                            continue
+
+                        # filtro por múltiples keywords
+                        if keyword:
+                            tokens = [t.strip().lower() for t in keyword.split() if t.strip()]
+
+                            if not all(tok in title_l for tok in tokens):
+                                continue
+
                     precio = None
                     ploc = card.locator(
                         "span.andes-money-amount__fraction, span.price-tag-fraction"
